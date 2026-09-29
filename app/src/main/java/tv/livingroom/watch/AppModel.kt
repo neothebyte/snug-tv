@@ -879,9 +879,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         store.stillWatchingAfter = episodes
     }
 
-    fun setThemeMusic(on: Boolean) {
-        themeMusic = on
-        store.themeMusic = on
+    fun toggleThemeMusic() {
+        themeMusic = !themeMusic
+        store.themeMusic = themeMusic
     }
 
     fun setScreensaver(minutes: Int) {

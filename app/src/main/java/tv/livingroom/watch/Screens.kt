@@ -1335,7 +1335,7 @@ private fun SettingsScreen(vm: AppModel) {
             }
         }
         item {
-            SettingRow("Theme music on show pages", if (vm.themeMusic) "On" else "Off") { vm.setThemeMusic(!vm.themeMusic) }
+            SettingRow("Theme music on show pages", if (vm.themeMusic) "On" else "Off") { vm.toggleThemeMusic() }
         }
         item {
             val current = cueNames.minByOrNull { kotlin.math.abs(it.first - vm.cueScale) }?.second ?: "Medium"
