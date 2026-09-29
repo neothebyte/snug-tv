@@ -57,6 +57,12 @@ class SessionStore(context: Context) {
             prefs.edit().putBoolean(KEY_AUTO, value).apply()
         }
 
+    var matchFrameRate: Boolean
+        get() = prefs.getBoolean(KEY_FRAME_RATE, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_FRAME_RATE, value).apply()
+        }
+
     val deviceId: String
         get() {
             val existing = prefs.getString(KEY_DEVICE, null)
@@ -97,5 +103,6 @@ class SessionStore(context: Context) {
         private const val KEY_LANG = "lang"
         private const val KEY_AUTO = "autoSubs"
         private const val KEY_DEVICE = "device"
+        private const val KEY_FRAME_RATE = "matchFrameRate"
     }
 }

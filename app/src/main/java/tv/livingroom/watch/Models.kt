@@ -43,7 +43,8 @@ data class MediaStreamInfo(
     val isDefault: Boolean,
     val isForced: Boolean,
     val isExternal: Boolean,
-    val channels: Int
+    val channels: Int,
+    val frameRate: Float = 0f
 ) {
     fun isTextSubtitle(): Boolean {
         if (type != "Subtitle") return false
@@ -117,11 +118,27 @@ data class MediaSourceInfo(
     val streams: List<MediaStreamInfo>
 )
 
+/**
+ * How much work the server does, from least to most. Playback starts at Direct and only
+ * steps down when the TV can't handle the file as it is.
+ */
+enum class PlayMode {
+    /** The TV reads the file as-is. */
+    Direct,
+    /** The server repackages the file over HLS without touching picture or sound. */
+    Remux,
+    /** Picture copied untouched; only the sound is converted. */
+    RemuxAudio,
+    /** The picture is re-encoded. Slow on the Pi, so it is the last resort. */
+    Transcode
+}
+
 data class PlaybackPlan(
     val playSessionId: String,
     val source: MediaSourceInfo,
     val hls: Boolean,
-    val burn: Boolean
+    val burn: Boolean,
+    val mode: PlayMode
 )
 
 data class RemoteSubtitle(
@@ -280,7 +297,10 @@ private fun JSONArray?.toStreams(): List<MediaStreamInfo> {
                     isDefault = stream.optBoolean("IsDefault"),
                     isForced = stream.optBoolean("IsForced"),
                     isExternal = stream.optBoolean("IsExternal"),
-                    channels = stream.optInt("Channels")
+                    channels = stream.optInt("Channels"),
+                    frameRate = stream.optDouble("RealFrameRate").takeIf { it > 0.0 }?.toFloat()
+                        ?: stream.optDouble("AverageFrameRate").takeIf { it > 0.0 }?.toFloat()
+                        ?: 0f
                 )
             )
         }
