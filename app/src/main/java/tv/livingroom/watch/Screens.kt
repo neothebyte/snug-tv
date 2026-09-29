@@ -245,7 +245,7 @@ private fun ServerStep(vm: AppModel) {
         Modifier.fillMaxSize().padding(horizontal = SafeX + 24.dp, vertical = SafeY),
         verticalArrangement = Arrangement.Center
     ) {
-        Kicker("Living Room")
+        Kicker("Snug")
         Text("Choose your server", style = TvType.display)
         Spacer(Modifier.height(8.dp))
         Text(
@@ -328,7 +328,7 @@ private fun ProfileStep(vm: AppModel) {
         Modifier.fillMaxSize().padding(horizontal = SafeX + 24.dp, vertical = SafeY),
         verticalArrangement = Arrangement.Center
     ) {
-        Kicker("Living Room")
+        Kicker("Snug")
         Text("Who's watching?", style = TvType.display)
         Spacer(Modifier.height(28.dp))
         LazyRow(
