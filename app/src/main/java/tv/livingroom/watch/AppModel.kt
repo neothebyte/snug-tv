@@ -764,9 +764,6 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val PAGE = 96
-    }
-
-    companion object {
         private const val QUICK_POLL_MS = 3_000L
     }
 }
