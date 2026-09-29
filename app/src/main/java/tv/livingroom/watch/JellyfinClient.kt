@@ -7,6 +7,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 class JellyfinException(val code: Int, message: String) : Exception(message)
 
@@ -31,7 +32,44 @@ class JellyfinClient(
 
     fun authenticate(username: String, password: String) {
         val body = JSONObject().put("Username", username).put("Pw", password)
-        val text = call("POST", "/Users/AuthenticateByName", body, auth = false)
+        saveAuth(call("POST", "/Users/AuthenticateByName", body, auth = false))
+    }
+
+    /** Asks [address] who it is. Returns null when nothing there answers like a Jellyfin server. */
+    fun serverInfo(address: String): FoundServer? {
+        val text = runCatching { call("GET", "/System/Info/Public", auth = false, server = address, client = quick) }.getOrNull() ?: return null
+        val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
+        val id = json.optString("Id")
+        if (id.isBlank()) return null
+        return FoundServer(id, json.optString("ServerName").ifBlank { "Jellyfin" }, address)
+    }
+
+    fun quickConnectEnabled(): Boolean =
+        runCatching { call("GET", "/QuickConnect/Enabled", auth = false).trim().equals("true", true) }.getOrDefault(false)
+
+    /** Starts a Quick Connect request; the user approves [QuickConnect.code] from another signed-in device. */
+    fun quickConnectStart(): QuickConnect {
+        // Jellyfin 10.9 moved this from GET to POST.
+        val text = try {
+            call("POST", "/QuickConnect/Initiate", auth = false)
+        } catch (error: JellyfinException) {
+            if (error.code != 404 && error.code != 405) throw error
+            call("GET", "/QuickConnect/Initiate", auth = false)
+        }
+        val json = JSONObject(text)
+        return QuickConnect(json.getString("Secret"), json.getString("Code"))
+    }
+
+    fun quickConnectApproved(secret: String): Boolean {
+        val text = call("GET", "/QuickConnect/Connect?secret=${URLEncoder.encode(secret, "UTF-8")}", auth = false)
+        return JSONObject(text).optBoolean("Authenticated")
+    }
+
+    fun authenticateQuickConnect(secret: String) {
+        saveAuth(call("POST", "/Users/AuthenticateWithQuickConnect", JSONObject().put("Secret", secret), auth = false))
+    }
+
+    private fun saveAuth(text: String) {
         val json = JSONObject(text)
         val user = json.getJSONObject("User")
         store.saveSession(json.getString("AccessToken"), user.getString("Id"), user.optString("Name"))
@@ -311,9 +349,16 @@ class JellyfinClient(
         }
     }
 
-    private fun call(method: String, path: String, body: JSONObject? = null, auth: Boolean = true): String {
+    private fun call(
+        method: String,
+        path: String,
+        body: JSONObject? = null,
+        auth: Boolean = true,
+        server: String = base(),
+        client: OkHttpClient = http
+    ): String {
         val request = Request.Builder()
-            .url(base() + path)
+            .url(server.trimEnd('/') + path)
             .header("X-Emby-Authorization", authorizationHeader())
         if (auth) store.token?.let { request.header("X-Emby-Token", it) }
         when (method) {
@@ -321,7 +366,7 @@ class JellyfinClient(
             "DELETE" -> request.delete()
             else -> request.method(method, (body ?: JSONObject()).toString().toRequestBody(JSON))
         }
-        http.newCall(request.build()).execute().use { response ->
+        client.newCall(request.build()).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (response.code == 401) throw JellyfinException(401, "Sign in again.")
             if (!response.isSuccessful) throw JellyfinException(response.code, "Request failed (${response.code})")
@@ -331,7 +376,12 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.2.0\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.3.0\"$token"
+    }
+
+    /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */
+    private val quick: OkHttpClient by lazy {
+        http.newBuilder().connectTimeout(4, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).build()
     }
 
     private fun base(): String = store.server.trimEnd('/')

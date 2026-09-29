@@ -22,6 +22,8 @@ val SUB_LANGS = listOf(
     SubLang("rus", "Russian", listOf("ru", "rus", "russian"))
 )
 
+data class QuickConnect(val secret: String, val code: String)
+
 data class Profile(
     val id: String,
     val name: String,
