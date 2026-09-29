@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -75,6 +77,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 private val ContentStart = 20.dp + RailCollapsed + 24.dp
 
@@ -89,13 +92,13 @@ fun WatchApp(vm: AppModel) {
             Intent(context, PlayerActivity::class.java)
                 .putExtra(PlayerActivity.EXTRA_ID, id)
                 .putExtra(PlayerActivity.EXTRA_FROM_START, fromStart)
-                .putExtra(PlayerActivity.EXTRA_LIBRARY_EMPTY, vm.movies.isEmpty())
+                .putExtra(PlayerActivity.EXTRA_LIBRARY_EMPTY, vm.libraryEmpty)
         )
     }
     val api = vm.api
     val screen = vm.screen
     val backdropMovie = when (screen) {
-        Screen.Home -> vm.featuredId?.let(vm::movieFor) ?: homeFeed(vm.movies).hero
+        Screen.Home -> vm.featured()
         is Screen.Detail -> vm.movieFor(screen.id)
         else -> null
     }
@@ -202,8 +205,10 @@ private fun rememberRestore(vm: AppModel): String? {
 }
 
 @Composable
-private fun DefaultFocus(vm: AppModel, restore: String?, requester: FocusRequester) {
-    LaunchedEffect(vm.screen.key) {
+private fun DefaultFocus(vm: AppModel, restore: String?, requester: FocusRequester, ready: Boolean = true) {
+    // Screens filled by the server wait for their first page before taking focus.
+    LaunchedEffect(vm.screen.key, ready) {
+        if (!ready) return@LaunchedEffect
         if (restore != null) {
             delay(400)
             if (vm.contentFocused) return@LaunchedEffect
@@ -500,9 +505,9 @@ private fun ProfileTile(
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
-    val feed = remember(vm.movies) { homeFeed(vm.movies) }
-    val hero = feed.hero
-    if (hero == null) {
+    val feed = vm.home
+    val hero = feed?.hero
+    if (feed == null || hero == null) {
         EmptyLibrary(vm)
         return
     }
@@ -515,7 +520,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
         delay(240)
         vm.featuredId = focusedId
     }
-    val featured = vm.featuredId?.let(vm::movieFor) ?: hero
+    val featured = vm.featured() ?: hero
     Column(Modifier.fillMaxSize().padding(top = SafeY)) {
         Column(Modifier.fillMaxWidth(0.62f).height(196.dp), verticalArrangement = Arrangement.Bottom) {
             val kicker = when {
@@ -569,10 +574,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                             vm.rememberFocus("actions")
                             vm.open(Screen.Detail(hero.id))
                         }
-                        TvButton("Surprise me", onFocus = backToHero) {
-                            val pool = vm.movies.filter { !it.played }.ifEmpty { vm.movies }
-                            pool.randomOrNull()?.let { play(it.id, true) }
-                        }
+                        TvButton("Surprise me", onFocus = backToHero) { vm.surprise(play) }
                     }
                 }
                 items(feed.shelves, key = { it.title }) { shelf ->
@@ -598,6 +600,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                                         onFocus = {
                                             focusedId = movie.id
                                             focusedShelf = shelf.title
+                                            vm.hover(Screen.Detail(movie.id))
                                         }
                                     ) {
                                         vm.rememberFocus(key)
@@ -608,6 +611,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                                     item(key = "more") {
                                         TvButton("See all", Modifier.padding(top = 60.dp)) {
                                             vm.rememberFocus("home/${shelf.title}/more")
+                                            vm.seedGenre(shelf.genre, shelf.movies)
                                             vm.open(Screen.Genre(shelf.genre))
                                         }
                                     }
@@ -645,13 +649,22 @@ private fun EmptyLibrary(vm: AppModel) {
 @Composable
 private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: Boolean = false) {
     val restore = rememberRestore(vm)
-    val items = vm.shown()
+    val list = vm.listFor(vm.screen) ?: return
+    val items = list.items
+    LaunchedEffect(list) { if (!list.loaded) vm.loadMore(list) }
+    val gridState = vm.gridState(vm.screen.key)
+    // One watcher for the whole grid: ask for the next page while the last eight rows are still off screen.
+    LaunchedEffect(list, gridState) {
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .distinctUntilChanged()
+            .collect { last -> if (last >= list.items.size - 48) vm.loadMore(list) }
+    }
     val first = remember { FocusRequester() }
-    DefaultFocus(vm, restore, first)
+    DefaultFocus(vm, restore, first, ready = items.isNotEmpty())
     val screenKey = vm.screen.key
     LazyVerticalGrid(
         columns = GridCells.Fixed(6),
-        state = vm.gridState(screenKey),
+        state = gridState,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         contentPadding = PaddingValues(top = SafeY, bottom = 48.dp, start = 2.dp, end = 2.dp),
@@ -662,7 +675,7 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
                 if (kicker.isNotBlank()) Kicker(kicker)
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(title, style = TvType.headline, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    Text("   ${items.size} ${if (items.size == 1) "movie" else "movies"}", style = TvType.body)
+                    if (list.loaded) Text("   ${list.total} ${if (list.total == 1) "movie" else "movies"}", style = TvType.body)
                 }
                 if (tools) {
                     Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -671,34 +684,33 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
                             "added" -> "Recently added"
                             else -> "A to Z"
                         }
-                        TvButton("Sort: $sortName") {
-                            vm.sort = when (vm.sort) {
-                                "title" -> "added"
-                                "added" -> "year"
-                                else -> "title"
-                            }
-                        }
-                        TvButton("Unwatched only", selected = vm.unwatchedOnly) { vm.unwatchedOnly = !vm.unwatchedOnly }
+                        TvButton("Sort: $sortName") { vm.cycleSort() }
+                        TvButton("Unwatched only", selected = vm.unwatchedOnly) { vm.toggleUnwatched() }
                     }
                 }
             }
         }
         if (items.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }, key = "empty") {
-                Text(
-                    if (vm.movies.isEmpty()) "No movies are in the library." else "Nothing here.",
-                    style = TvType.title
-                )
+                when {
+                    list.failed -> Column {
+                        Text("These movies didn't load.", style = TvType.title)
+                        TvButton("Try again", Modifier.padding(top = 12.dp)) { vm.retry(list) }
+                    }
+                    !list.loaded -> CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+                    else -> Text(if (vm.libraryEmpty) "No movies are in the library." else "Nothing here.", style = TvType.title)
+                }
             }
         }
-        gridItems(items, key = { it.id }) { movie ->
+        gridItemsIndexed(items, key = { _, movie -> movie.id }) { index, movie ->
             val key = "$screenKey/${movie.id}"
             PosterCard(
                 movie,
                 vm.api.imageUrl(movie.id, "Primary", movie.primaryTag, 360),
-                modifier = if (movie == items.first()) Modifier.focusRequester(first) else Modifier,
+                modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
                 width = null,
-                autoFocus = restore == key
+                autoFocus = restore == key,
+                onFocus = { vm.hover(Screen.Detail(movie.id)) }
             ) {
                 vm.rememberFocus(key)
                 vm.open(Screen.Detail(movie.id))
@@ -712,7 +724,7 @@ private fun SearchScreen(vm: AppModel) {
     val restore = rememberRestore(vm)
     val firstKey = remember { FocusRequester() }
     DefaultFocus(vm, restore, firstKey)
-    val results = vm.shown()
+    val results = vm.searchResults
     Row(Modifier.fillMaxSize().padding(top = SafeY)) {
         Column(Modifier.width(250.dp)) {
             Text("Search", style = TvType.headline)
@@ -737,18 +749,20 @@ private fun SearchScreen(vm: AppModel) {
             }
             Spacer(Modifier.height(14.dp))
             Keyboard(firstKey) { key ->
-                vm.query = when (key) {
+                vm.type(when (key) {
                     "⌫" -> vm.query.dropLast(1)
                     "Clear" -> ""
                     "Space" -> if (vm.query.isEmpty() || vm.query.endsWith(" ")) vm.query else "${vm.query} "
                     else -> vm.query + key
-                }
+                })
             }
         }
         Spacer(Modifier.width(28.dp))
         Box(Modifier.weight(1f)) {
             if (vm.query.isBlank()) {
                 Text("Type with the remote. Results appear here.", style = TvType.body, modifier = Modifier.padding(top = 44.dp))
+            } else if (results.isEmpty() && vm.searchPending) {
+                Text("Searching…", style = TvType.body, modifier = Modifier.padding(top = 44.dp))
             } else if (results.isEmpty()) {
                 Text("No matches for “${vm.query.trim()}”.", style = TvType.body, modifier = Modifier.padding(top = 44.dp))
             } else {
@@ -761,7 +775,13 @@ private fun SearchScreen(vm: AppModel) {
                 ) {
                     gridItems(results, key = { it.id }) { movie ->
                         val key = "search/${movie.id}"
-                        PosterCard(movie, vm.api.imageUrl(movie.id, "Primary", movie.primaryTag, 360), width = null, autoFocus = restore == key) {
+                        PosterCard(
+                            movie,
+                            vm.api.imageUrl(movie.id, "Primary", movie.primaryTag, 360),
+                            width = null,
+                            autoFocus = restore == key,
+                            onFocus = { vm.hover(Screen.Detail(movie.id)) }
+                        ) {
                             vm.rememberFocus(key)
                             vm.open(Screen.Detail(movie.id))
                         }
@@ -812,13 +832,9 @@ private fun KeyCap(label: String, modifier: Modifier, requester: FocusRequester?
 private fun GenresScreen(vm: AppModel) {
     val restore = rememberRestore(vm)
     val first = remember { FocusRequester() }
-    DefaultFocus(vm, restore, first)
-    val groups = remember(vm.movies) {
-        vm.movies.flatMap { movie -> movie.genres.map { it to movie } }
-            .groupBy({ it.first }, { it.second })
-            .entries
-            .sortedByDescending { it.value.size }
-    }
+    LaunchedEffect(Unit) { vm.loadGenres() }
+    val groups = vm.genreStats.orEmpty()
+    DefaultFocus(vm, restore, first, ready = groups.isNotEmpty())
     LazyVerticalGrid(
         columns = GridCells.Fixed(4),
         state = vm.gridState("genres"),
@@ -830,25 +846,46 @@ private fun GenresScreen(vm: AppModel) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Text("Genres", style = TvType.headline, modifier = Modifier.padding(bottom = 6.dp))
         }
-        gridItems(groups, key = { it.key }) { entry ->
-            val cover = entry.value.filter { it.backdropTag != null }.maxByOrNull { it.communityRating ?: 0.0 }
-            val key = "genres/${entry.key}"
+        if (groups.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                if (vm.genreStats == null && !vm.genresFailed) {
+                    CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+                } else {
+                    Column {
+                        Text(if (vm.genreStats == null) "Genres didn't load." else "No genres yet.", style = TvType.title)
+                        if (vm.genreStats == null) TvButton("Try again", Modifier.padding(top = 12.dp)) { vm.loadGenres() }
+                    }
+                }
+            }
+        }
+        gridItems(groups, key = { it.name }) { genre ->
+            val cover = genre.cover
+            val key = "genres/${genre.name}"
             GenreTile(
-                entry.key,
-                entry.value.size,
+                genre.name,
+                genre.count,
                 cover?.let { vm.api.imageUrl(it.id, "Backdrop", it.backdropTag, 640) },
-                requester = if (entry == groups.first()) first else null,
-                autoFocus = restore == key
+                requester = if (genre == groups.first()) first else null,
+                autoFocus = restore == key,
+                onFocus = { vm.hover(Screen.Genre(genre.name)) }
             ) {
                 vm.rememberFocus(key)
-                vm.open(Screen.Genre(entry.key))
+                vm.open(Screen.Genre(genre.name))
             }
         }
     }
 }
 
 @Composable
-private fun GenreTile(name: String, count: Int, imageUrl: String?, requester: FocusRequester?, autoFocus: Boolean, onClick: () -> Unit) {
+private fun GenreTile(
+    name: String,
+    count: Int,
+    imageUrl: String?,
+    requester: FocusRequester?,
+    autoFocus: Boolean,
+    onFocus: () -> Unit,
+    onClick: () -> Unit
+) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val own = remember { FocusRequester() }
@@ -858,6 +895,7 @@ private fun GenreTile(name: String, count: Int, imageUrl: String?, requester: Fo
     Box(
         Modifier
             .focusRequester(target)
+            .onFocusChanged { if (it.isFocused) onFocus() }
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
             .graphicsLayer {
@@ -893,7 +931,7 @@ private fun DetailScreen(vm: AppModel, id: String, play: (String, Boolean) -> Un
     val restore = rememberRestore(vm)
     val playFocus = remember { FocusRequester() }
     DefaultFocus(vm, restore, playFocus)
-    val similar = remember(movie.id, vm.movies) { vm.moreLike(movie) }
+    val similar = vm.similar[movie.id].orEmpty()
     val crew = remember(movie) {
         movie.people.filter { it.type == "Director" } +
             movie.people.filter { it.type == "Actor" }.take(14) +
@@ -1000,7 +1038,7 @@ private fun DetailBody(
                     ) {
                         items(crew, key = { it.type + it.name }) { person ->
                             val label = if (person.type == "Director") "Director · ${person.name}" else person.name
-                            TvButton(label) {
+                            TvButton(label, onFocus = { vm.hover(Screen.Person(person.name, person.type)) }) {
                                 vm.rememberFocus("person/${person.name}")
                                 vm.open(Screen.Person(person.name, person.type))
                             }
@@ -1021,7 +1059,12 @@ private fun DetailBody(
                     ) {
                         items(similar, key = { it.id }) { other ->
                             val key = "${vm.screen.key}/similar/${other.id}"
-                            PosterCard(other, vm.api.imageUrl(other.id, "Primary", other.primaryTag, 360), autoFocus = restore == key) {
+                            PosterCard(
+                                other,
+                                vm.api.imageUrl(other.id, "Primary", other.primaryTag, 360),
+                                autoFocus = restore == key,
+                                onFocus = { vm.hover(Screen.Detail(other.id)) }
+                            ) {
                                 vm.rememberFocus(key)
                                 vm.open(Screen.Detail(other.id))
                             }
@@ -1084,7 +1127,7 @@ private fun SettingsScreen(vm: AppModel) {
         item { Kicker("Account", Modifier.padding(top = 10.dp)) }
         item { SettingRow("Server", vm.store.serverName.ifBlank { vm.store.server.substringAfter("://") }) { askServer = true } }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Living Room TV 1.3 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Living Room TV 1.4 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(

@@ -106,9 +106,6 @@ data class Movie(
     val streams: List<MediaStreamInfo>
 ) {
     val sortLabel: String get() = sortName.ifBlank { name }
-    val haystack: String by lazy {
-        "$name $sortName ${people.joinToString(" ") { it.name }} ${genres.joinToString(" ")}".lowercase(Locale.US)
-    }
     val progress: Float
         get() = if (runtimeTicks > 0L && positionTicks > 0L) (positionTicks.toFloat() / runtimeTicks).coerceIn(0f, 1f) else 0f
 }
@@ -172,6 +169,10 @@ data class Cue(val startMs: Long, val endMs: Long, val text: String)
 data class Shelf(val title: String, val movies: List<Movie>, val genre: String? = null)
 
 data class HomeFeed(val hero: Movie?, val resumeFirst: Boolean, val shelves: List<Shelf>)
+
+data class MoviePage(val items: List<Movie>, val total: Int)
+
+data class GenreStat(val name: String, val count: Int, val cover: Movie?)
 
 private val GENERATED_TITLE = Regex("^(und|undefined)\\b| - (SUBRIP|SRT|PGSSUB|DVDSUB|ASS|SSA|AAC|AC3|EAC3|DTS|TRUEHD|FLAC|OPUS|MP3)\\b", RegexOption.IGNORE_CASE)
 
@@ -357,42 +358,6 @@ fun playbackError(error: Throwable?, libraryEmpty: Boolean): String {
         return "Lost the connection to Jellyfin. Check that the server is on and try again."
     }
     return "This movie can't start. The file may be damaged or in a format this TV can't play."
-}
-
-fun homeFeed(movies: List<Movie>): HomeFeed {
-    val resume = movies.filter { it.positionTicks > 0L }.sortedByDescending { it.lastPlayed }
-    val recent = movies.sortedByDescending { it.dateCreated }
-    val unwatched = movies
-        .filter { !it.played && it.positionTicks <= 0L }
-        .sortedByDescending { it.dateCreated }
-    val favorites = movies.filter { it.favorite }
-    val shelves = buildList {
-        if (resume.isNotEmpty()) add(Shelf("Continue watching", resume.take(16)))
-        if (unwatched.isNotEmpty()) add(Shelf("Unwatched", unwatched.take(18)))
-        if (favorites.isNotEmpty()) add(Shelf("Favorites", favorites.take(16)))
-        addAll(topGenres(movies))
-        if (recent.isNotEmpty()) add(Shelf("Recently added", recent.take(18)))
-    }
-    return HomeFeed(resume.firstOrNull() ?: recent.firstOrNull(), resume.isNotEmpty(), shelves)
-}
-
-fun topGenres(movies: List<Movie>): List<Shelf> {
-    val groups = linkedMapOf<String, MutableList<Movie>>()
-    for (movie in movies) {
-        for (genre in movie.genres) groups.getOrPut(genre) { mutableListOf() }.add(movie)
-    }
-    return groups.entries
-        .sortedByDescending { it.value.size }
-        .take(4)
-        .map { Shelf(it.key, it.value.take(16), it.key) }
-}
-
-fun sortMovies(movies: List<Movie>, sort: String): List<Movie> {
-    return when (sort) {
-        "year" -> movies.sortedWith(compareByDescending<Movie> { it.year ?: 0 }.thenBy { it.sortLabel.lowercase() })
-        "added" -> movies.sortedByDescending { it.dateCreated }
-        else -> movies.sortedBy { it.sortLabel.lowercase() }
-    }
 }
 
 fun streamMatchesLanguage(stream: MediaStreamInfo, code: String): Boolean {
