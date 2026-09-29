@@ -49,7 +49,7 @@ adb connect <tv-address>:5555
 adb install -r LivingRoomTV.apk
 ```
 
-To try a build before it is released, open a pull request's run under **Actions → Build** and download the `LivingRoomTV` artifact (a zip with the APK inside). Those builds are signed with a different key from the release APK, so uninstall the app before switching between them.
+To try a build before it is released, open a pull request's run under **Actions → Build** and download the `LivingRoomTV` artifact (a zip with the APK inside). They are signed with the same release key as local builds, so they install over the app already on the television.
 
 On the television, open **Living Room**, pick your server (or enter its address, for example `192.168.1.10`), and choose a profile or use Quick Connect.
 
@@ -71,7 +71,15 @@ The APK is written to `app/build/outputs/apk/release/app-release.apk`.
 
 GitHub also builds the APK for every push and pull request: open the run under **Actions → Build** and download the `LivingRoomTV` artifact.
 
-Release builds are currently signed with the Android debug key so they can be sideloaded without extra setup. To publish or share builds more widely, create a release keystore and add a `signingConfigs` block in `app/build.gradle.kts`; note that devices with a debug-signed build installed must uninstall it before installing one signed with a different key.
+Release builds are signed with the release key when these properties are set, in `~/.gradle/gradle.properties` locally or as environment variables:
+
+```properties
+LIVINGROOM_KEYSTORE=/path/to/livingroom-release.jks
+LIVINGROOM_KEYSTORE_PASSWORD=...
+LIVINGROOM_KEY_ALIAS=livingroom
+```
+
+GitHub Actions reads the key from the `LIVINGROOM_KEYSTORE_BASE64` and `LIVINGROOM_KEYSTORE_PASSWORD` repository secrets. Without them, release builds fall back to the debug key, which will not install over a release-signed app. Keep a backup of the keystore: if it is lost, every television has to uninstall the app before installing a build signed with a new key.
 
 ## Project layout
 

@@ -16,13 +16,31 @@ android {
         versionName = "1.4.0"
     }
 
+    // Release key: from ~/.gradle/gradle.properties locally, or environment variables in CI.
+    // Without it, release builds fall back to the debug key.
+    fun signingValue(name: String): String? =
+        providers.gradleProperty(name).orElse(providers.environmentVariable(name)).orNull
+
+    val releaseKeystore = signingValue("LIVINGROOM_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = signingValue("LIVINGROOM_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("LIVINGROOM_KEY_ALIAS") ?: "livingroom"
+                keyPassword = signingValue("LIVINGROOM_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             // R8 makes Compose noticeably quicker on TV boxes. Names are kept (see proguard-rules.pro).
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
