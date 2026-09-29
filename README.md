@@ -45,7 +45,7 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 
 ## Install
 
-Download the APK (`LivingRoomTV.apk`, the file name from before the rename) from the [latest release](https://github.com/neothebyte/living-room-tv/releases/latest), then sideload it:
+Download the APK (`LivingRoomTV.apk`, the file name from before the rename) from the [latest release](https://github.com/neothebyte/snug-tv/releases/latest), then sideload it:
 
 ```bash
 adb connect <tv-address>:5555
@@ -104,7 +104,7 @@ app/src/main/java/tv/livingroom/watch/
 
 ## Related
 
-- [Living Room — Web](https://github.com/neothebyte/living-room-web): the browser client for the same server (not yet renamed).
+- [Snug — Web](https://github.com/neothebyte/snug-web): the browser client for the same server.
 
 ## Acknowledgements
 
