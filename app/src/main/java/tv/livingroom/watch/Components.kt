@@ -39,7 +39,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -48,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -56,13 +61,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 
 @Composable
 fun FullBackdrop(url: String?, strong: Boolean = false) {
     Box(Modifier.fillMaxSize().background(Ink)) {
         if (url != null) {
+            val context = LocalContext.current
+            val request = remember(url) { ImageRequest.Builder(context).data(url).crossfade(240).build() }
             AsyncImage(
-                model = url,
+                model = request,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 alignment = Alignment.TopCenter,
@@ -191,14 +199,19 @@ fun PosterCard(
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .graphicsLayer { scaleX = scale; scaleY = scale }
-                .shadow(if (focused) 18.dp else 0.dp, RoundedCornerShape(10.dp))
+                // A few flat translucent layers instead of a real 18dp shadow, which weak TV GPUs
+                // redraw on every frame of the zoom. Only redraws, never re-lays out, on focus.
+                .drawBehind { if (focused) drawGlow() }
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF1B1D24))
                 .border(if (focused) 2.dp else 0.5.dp, if (focused) Color.White else Line, RoundedCornerShape(10.dp))
         ) {
             if (imageUrl != null) {
+                val context = LocalContext.current
+                // Posters have no transparency, so 16-bit pixels halve their memory and upload cost.
+                val request = remember(imageUrl) { ImageRequest.Builder(context).data(imageUrl).allowRgb565(true).build() }
                 AsyncImage(
-                    model = imageUrl,
+                    model = request,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -230,15 +243,34 @@ fun PosterCard(
             }
         }
         if (showTitle) {
-            Spacer(Modifier.height(if (focused) 10.dp else 6.dp))
+            // Fixed height, and the title slides down with a layer move, so focusing a poster
+            // doesn't make the whole grid row measure itself again.
+            Spacer(Modifier.height(6.dp))
             Text(
                 movie.cardTitle,
                 style = TvType.small,
                 color = if (focused) Cream else Faint,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.graphicsLayer { translationY = if (focused) 4.dp.toPx() else 0f }
             )
         }
+    }
+}
+
+private val GlowRings = listOf(3.dp to 0.20f, 7.dp to 0.12f, 12.dp to 0.06f)
+
+/** A soft dark halo under a focused poster, a little lower than it like a shadow. */
+private fun DrawScope.drawGlow() {
+    val drop = 5.dp.toPx()
+    GlowRings.forEach { (spread, alpha) ->
+        val grow = spread.toPx()
+        drawRoundRect(
+            color = Color.Black.copy(alpha = alpha),
+            topLeft = Offset(-grow, -grow + drop),
+            size = Size(size.width + grow * 2, size.height + grow * 2),
+            cornerRadius = CornerRadius(10.dp.toPx() + grow)
+        )
     }
 }
 

@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -53,6 +55,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -84,6 +87,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -144,9 +148,26 @@ class PlayerActivity : ComponentActivity() {
     private var selectedAudio by mutableStateOf<Int?>(null)
     private var remoteHits by mutableStateOf<List<RemoteSubtitle>>(emptyList())
     private var remoteNote by mutableStateOf("")
-    /** The episode offered when one finishes; null the rest of the time. */
+    /** The episode offered in the Up next card; null while the card isn't showing. */
     private var upNext by mutableStateOf<Movie?>(null)
     private var nextJob: Job? = null
+    /** False until this title's first picture, while the artwork start screen shows. */
+    private var started by mutableStateOf(false)
+    /** The title has played to its end. */
+    private var ended by mutableStateOf(false)
+    private var art by mutableStateOf<String?>(null)
+    private var headline by mutableStateOf("")
+    private var kicker by mutableStateOf("")
+    private var overview by mutableStateOf("")
+    /** Intro and credits times, when the server has them. */
+    private var segments: List<MediaSegment> = emptyList()
+    /** The episode after this one, looked up as soon as an episode starts. */
+    private var nextEpisode: Movie? = null
+    private var extrasJob: Job? = null
+    private var upNextDismissed = false
+    private var skippedIntroAt: Long? = null
+    /** Where the intro ends while the Skip intro button shows; null the rest of the time. */
+    private var introEndMs by mutableStateOf<Long?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -155,6 +176,8 @@ class PlayerActivity : ComponentActivity() {
         libraryEmpty = intent.getBooleanExtra(EXTRA_LIBRARY_EMPTY, false)
         val itemId = intent.getStringExtra(EXTRA_ID).orEmpty()
         val fromStart = intent.getBooleanExtra(EXTRA_FROM_START, false)
+        art = intent.getStringExtra(EXTRA_ART)
+        headline = intent.getStringExtra(EXTRA_HEADLINE).orEmpty()
         exo = buildPlayer()
         setContent { LivingRoomTheme { PlayerScreen() } }
         lifecycleScope.launch {
@@ -172,7 +195,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun buildPlayer(): ExoPlayer {
         val dataSource = DefaultHttpDataSource.Factory()
-            .setUserAgent("SnugTV/1.8.1")
+            .setUserAgent("SnugTV/1.9.0")
             .setDefaultRequestProperties(mapOf("X-Emby-Token" to store.token.orEmpty()))
             .setConnectTimeoutMs(20_000)
             .setReadTimeoutMs(60_000)
@@ -193,18 +216,20 @@ class PlayerActivity : ComponentActivity() {
             .also { player ->
                 player.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
+                        ended = state == Player.STATE_ENDED
                         loading = state == Player.STATE_BUFFERING || state == Player.STATE_IDLE && error == null && plan == null
                         if (state == Player.STATE_READY) {
                             retriedNetwork = false
                             loading = false
                             loadingNote = ""
+                            started = true
                             durationMs = player.duration.takeIf { it > 0 } ?: durationMs
                             if (!sentStart) report()
                         }
                         if (state == Player.STATE_ENDED) {
                             reportStop()
-                            val ended = movie
-                            if (ended?.isEpisode == true) offerNext(ended) else finish()
+                            val finished = movie
+                            if (finished?.isEpisode == true) offerNext(finished) else finish()
                         }
                     }
 
@@ -263,6 +288,8 @@ class PlayerActivity : ComponentActivity() {
                 var loaded = withContext(Dispatchers.IO) { api.item(itemId) }
                 movie = loaded
                 title = if (loaded.isEpisode) "${loaded.seriesName} · ${loaded.cardTitle}" else loaded.name
+                showInfo(loaded)
+                loadExtras(loaded)
                 chapters = loaded.chapters
                 durationMs = loaded.runtimeTicks / 10_000L
                 subtitleIndex = preferredSubtitleIndex(loaded.streams, store.subtitleLanguage)
@@ -494,18 +521,82 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    /** Looks up the episode after [ended] and offers it, or closes the player at the end of the show. */
-    private fun offerNext(ended: Movie) {
+    /** What the start and pause screens say about [item]. */
+    private fun showInfo(item: Movie) {
+        headline = item.name
+        kicker = if (item.isEpisode) listOf(item.seriesName, item.episodeCode).filter { it.isNotBlank() }.joinToString("  ·  ") else item.year?.toString().orEmpty()
+        overview = item.overview
+        if (art == null) art = api.backdropUrl(item, 1280) ?: api.imageUrl(item.id, "Primary", item.primaryTag, 1280)
+    }
+
+    /** Fetches the intro and credits times, and for an episode the one after it, in the background. */
+    private fun loadExtras(item: Movie) {
+        extrasJob?.cancel()
+        segments = emptyList()
+        nextEpisode = null
+        extrasJob = lifecycleScope.launch {
+            segments = runCatching { withContext(Dispatchers.IO) { api.segments(item.id) } }.getOrDefault(emptyList())
+            if (item.isEpisode) {
+                nextEpisode = runCatching { withContext(Dispatchers.IO) { api.episodeAfter(item) } }.getOrNull()
+            }
+        }
+    }
+
+    /** When the Up next card comes up: as the credits start, else 30 seconds before the end. */
+    private fun upNextAtMs(): Long {
+        val duration = durationMs
+        val outro = segments.firstOrNull { it.type == "Outro" }
+        if (outro != null && duration - outro.startMs > 5_000) return outro.startMs
+        return if (duration > 300_000) duration - 30_000 else Long.MAX_VALUE
+    }
+
+    /** Shows or hides Skip intro and the Up next card as the episode plays. */
+    private fun checkMoments(nowMs: Long) {
+        if (!started || error != null) return
+        val intro = segments.firstOrNull { it.type == "Intro" }
+        introEndMs = intro?.takeIf { nowMs >= it.startMs && nowMs < it.endMs - 1_000 && skippedIntroAt != it.startMs }?.endMs
+        val next = nextEpisode ?: return
+        val at = upNextAtMs()
+        if (nowMs < at - 1_000) {
+            upNextDismissed = false
+            if (upNext != null && !ended) upNext = null
+        } else if (nowMs >= at && upNext == null && !upNextDismissed && panel == null) {
+            showUpNext(next)
+        }
+    }
+
+    private fun skipIntro() {
+        val intro = segments.firstOrNull { it.type == "Intro" } ?: return
+        skippedIntroAt = intro.startMs
+        introEndMs = null
+        seekTo(intro.endMs)
+    }
+
+    private fun showUpNext(next: Movie) {
+        panel = null
+        controls = false
+        upNext = next
+    }
+
+    private fun keepWatching() {
+        upNextDismissed = true
+        upNext = null
+    }
+
+    /** Offers the episode after [episode], or closes the player at the end of the show. */
+    private fun offerNext(episode: Movie) {
+        nextEpisode?.let {
+            showUpNext(it)
+            return
+        }
         nextJob?.cancel()
         nextJob = lifecycleScope.launch {
-            val next = runCatching { withContext(Dispatchers.IO) { api.episodeAfter(ended) } }.getOrNull()
+            val next = runCatching { withContext(Dispatchers.IO) { api.episodeAfter(episode) } }.getOrNull()
             if (next == null) {
                 finish()
                 return@launch
             }
-            panel = null
-            controls = false
-            upNext = next
+            showUpNext(next)
         }
     }
 
@@ -513,8 +604,21 @@ class PlayerActivity : ComponentActivity() {
     private fun playNext() {
         val next = upNext ?: return
         upNext = null
+        // Leaving during the credits: tell the server where this one stopped first.
+        reportStop()
+        exo?.stop()
         nextJob?.cancel()
+        extrasJob?.cancel()
         prepareJob?.cancel()
+        segments = emptyList()
+        nextEpisode = null
+        upNextDismissed = false
+        skippedIntroAt = null
+        introEndMs = null
+        started = false
+        art = api.backdropUrl(next, 1280)
+        showInfo(next)
+        title = "${next.seriesName} · ${next.cardTitle}"
         plan = null
         sentStart = false
         reportedStop = false
@@ -627,6 +731,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun goBack() {
         when {
+            upNext != null && !ended -> keepWatching()
             upNext != null -> finish()
             error != null -> finish()
             panel == Panel.Online -> openPanel(Panel.Subtitles)
@@ -668,8 +773,12 @@ class PlayerActivity : ComponentActivity() {
             KeyEvent.KEYCODE_DPAD_LEFT -> seekBy(if (repeat > 2) -30_000 else -10_000)
             KeyEvent.KEYCODE_DPAD_RIGHT -> seekBy(if (repeat > 2) 30_000 else 10_000)
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                togglePlay()
-                showControls()
+                if (introEndMs != null && started) {
+                    skipIntro()
+                } else {
+                    togglePlay()
+                    showControls()
+                }
             }
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> showControls()
             KeyEvent.KEYCODE_CAPTIONS -> {
@@ -791,8 +900,10 @@ class PlayerActivity : ComponentActivity() {
                 exo?.let { player ->
                     positionMs = player.currentPosition.coerceAtLeast(0L)
                     player.duration.takeIf { it > 0 }?.let { durationMs = it }
+                    checkMoments(positionMs)
                 }
-                delay(250)
+                // Nothing on screen moves with the clock while the controls are hidden.
+                delay(if (controls || seekPreviewMs != null) 250 else 500)
             }
         }
         LaunchedEffect(loading, plan) {
@@ -825,7 +936,11 @@ class PlayerActivity : ComponentActivity() {
                 )
             }
             Subtitles()
-            if (loading && error == null) {
+            AnimatedVisibility(!started && error == null, enter = fadeIn(), exit = fadeOut(tween(450))) {
+                StartCover()
+            }
+            PauseInfo()
+            if (loading && started && error == null) {
                 Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = Cream, strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
                     if (loadingNote.isNotBlank()) Text(loadingNote, style = TvType.body, color = Cream, modifier = Modifier.padding(top = 14.dp))
@@ -835,17 +950,86 @@ class PlayerActivity : ComponentActivity() {
             if (preview != null && !controls && error == null) {
                 SeekStrip(preview)
             }
-            AnimatedVisibility(controls && panel == null && error == null && upNext == null, enter = fadeIn(), exit = fadeOut()) {
+            AnimatedVisibility(started && controls && panel == null && error == null && upNext == null, enter = fadeIn(), exit = fadeOut()) {
                 Controls()
+            }
+            AnimatedVisibility(
+                started && introEndMs != null && !controls && seekPreviewMs == null && panel == null && error == null && upNext == null,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(horizontal = SafeX, vertical = SafeY)
+            ) {
+                SkipIntroButton()
             }
             panel?.let { PanelSheet(it) }
             error?.let { ErrorOverlay(it) }
-            upNext?.let { UpNextOverlay(it) }
+            upNext?.let { UpNextCard(it) }
         }
     }
 
+    /** Artwork and title while a title starts, instead of a black screen. */
     @Composable
-    private fun UpNextOverlay(next: Movie) {
+    private fun StartCover() {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            art?.let { url ->
+                AsyncImage(model = url, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            }
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(0f to Color(0x6607080C), 0.5f to Color(0x9907080C), 1f to Color(0xF207080C))
+                )
+            )
+            Column(Modifier.align(Alignment.BottomStart).fillMaxWidth(0.62f).padding(horizontal = SafeX, vertical = SafeY + 12.dp)) {
+                if (kicker.isNotBlank()) Kicker(kicker)
+                if (headline.isNotBlank()) Text(headline, style = TvType.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                    Text(loadingNote.ifBlank { "Starting…" }, style = TvType.body, color = Cream, modifier = Modifier.padding(start = 10.dp))
+                }
+            }
+        }
+    }
+
+    /** The title and summary over a dimmed picture after a moment on pause. */
+    @Composable
+    private fun PauseInfo() {
+        val paused = started && !playing && !loading && panel == null && error == null && upNext == null
+        var show by remember { mutableStateOf(false) }
+        LaunchedEffect(paused) {
+            if (!paused) {
+                show = false
+                return@LaunchedEffect
+            }
+            delay(1_200)
+            show = true
+        }
+        AnimatedVisibility(show && paused, enter = fadeIn(tween(400)), exit = fadeOut(tween(200))) {
+            Box(Modifier.fillMaxSize().background(Color(0x99000000))) {
+                Column(Modifier.align(Alignment.CenterStart).fillMaxWidth(0.6f).padding(start = SafeX, bottom = 60.dp)) {
+                    Kicker(kicker.takeIf { movie?.isEpisode == true } ?: "You're watching")
+                    Text(headline, style = TvType.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (overview.isNotBlank()) {
+                        Text(overview, style = TvType.body, color = Cream, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
+                    }
+                }
+            }
+        }
+    }
+
+    /** Looks focused on purpose: OK presses it while it shows (see handleKey). */
+    @Composable
+    private fun SkipIntroButton() {
+        Row(
+            Modifier.clip(RoundedCornerShape(20.dp)).background(Color.White).padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Skip intro  ›", style = TvType.button, color = Color(0xFF111111))
+        }
+    }
+
+    /** A small card in the corner as the credits roll, counting down to the next episode. */
+    @Composable
+    private fun UpNextCard(next: Movie) {
         val playFocus = remember { FocusRequester() }
         var left by remember(next.id) { mutableIntStateOf(UP_NEXT_SECONDS) }
         LaunchedEffect(next.id) {
@@ -853,27 +1037,36 @@ class PlayerActivity : ComponentActivity() {
             runCatching { playFocus.requestFocus() }
             while (left > 0) {
                 delay(1_000)
-                left--
+                // Waits while paused, but keeps counting once the episode has ended.
+                val running = ended || exo?.isPlaying != false
+                if (running && panel == null) left--
             }
             playNext()
         }
-        Box(Modifier.fillMaxSize().background(Color(0xE6000000)), contentAlignment = Alignment.Center) {
-            Column(Modifier.width(560.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Kicker("Up next")
-                Text(next.cardTitle, style = TvType.headline, color = Cream, textAlign = TextAlign.Center)
-                if (next.overview.isNotBlank()) {
-                    Text(
-                        next.overview,
-                        style = TvType.body,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
+        Box(Modifier.fillMaxSize().padding(horizontal = SafeX, vertical = SafeY), contentAlignment = Alignment.BottomEnd) {
+            Row(
+                Modifier.width(520.dp).clip(RoundedCornerShape(18.dp)).background(Color(0xF014161D))
+                    .border(1.dp, Line, RoundedCornerShape(18.dp)).padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val still = api.imageUrl(next.id, "Primary", next.primaryTag, 420)
+                    ?: api.backdropUrl(next, 420)
+                Box(Modifier.width(168.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(10.dp)).background(Color(0xFF1B1D24))) {
+                    if (still != null) AsyncImage(model = still, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                 }
-                Row(Modifier.padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    TvButton("Play now ($left)", primary = true, focusRequester = playFocus) { playNext() }
-                    TvButton("Back") { finish() }
+                Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                    Kicker("Up next")
+                    Text(next.cardTitle, style = TvType.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("Starts in $left", style = TvType.small, modifier = Modifier.padding(top = 4.dp))
+                    Box(Modifier.padding(top = 6.dp).fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.2f))) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth((UP_NEXT_SECONDS - left) / UP_NEXT_SECONDS.toFloat()).background(Color.White))
+                    }
+                    Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TvButton("Play now", icon = R.drawable.ic_play, primary = true, focusRequester = playFocus) { playNext() }
+                        TvButton(if (ended) "Back" else "Keep watching") {
+                            if (ended) finish() else keepWatching()
+                        }
+                    }
                 }
             }
         }
@@ -1199,6 +1392,8 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_ID = "id"
         const val EXTRA_FROM_START = "fromStart"
         const val EXTRA_LIBRARY_EMPTY = "libraryEmpty"
+        const val EXTRA_ART = "art"
+        const val EXTRA_HEADLINE = "headline"
         private const val MB = 1024L * 1024L
         private const val UP_NEXT_SECONDS = 10
     }

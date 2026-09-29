@@ -1,0 +1,5 @@
+# Snug's own code, compiled ahead of time when the app is installed instead of being
+# interpreted on first use. Makes opening the app and the first scrolls quicker.
+# The libraries (Compose, Coil, Media3) ship their own profiles, which get merged in.
+HSPLtv/livingroom/watch/**;->**(**)**
+Ltv/livingroom/watch/**;
