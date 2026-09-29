@@ -1,0 +1,1081 @@
+package tv.livingroom.watch
+
+import android.os.Bundle
+import android.view.KeyEvent
+import android.view.WindowManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.annotation.OptIn as AndroidOptIn
+
+private enum class Panel { Subtitles, Online, Audio, Chapters, Speed }
+
+@AndroidOptIn(markerClass = [UnstableApi::class])
+class PlayerActivity : ComponentActivity() {
+    private val app by lazy { application as LivingRoomApp }
+    private val api get() = app.api
+    private val store get() = app.store
+
+    private var exo: ExoPlayer? = null
+    private var movie: Movie? = null
+    private var plan: PlaybackPlan? = null
+    private var subtitleIndex: Int? = null
+    private var audioIndex: Int? = null
+    private var subsChosen = false
+    private var sentStart = false
+    private var reportedStop = false
+    private var retriedTranscode = false
+    private var forcedTranscode = false
+    private var libraryEmpty = false
+    private var pendingTextTrack: MediaStreamInfo? = null
+    private var pendingAudioTrack: MediaStreamInfo? = null
+    private var prepareJob: Job? = null
+    private var subtitleJob: Job? = null
+    private var seekJob: Job? = null
+    private var pendingSeekMs: Long? = null
+    private val consumedUps = mutableSetOf<Int>()
+
+    private var title by mutableStateOf("")
+    private var loading by mutableStateOf(true)
+    private var loadingNote by mutableStateOf("")
+    private var error by mutableStateOf<String?>(null)
+    private var playing by mutableStateOf(false)
+    private var controls by mutableStateOf(true)
+    private var panel by mutableStateOf<Panel?>(null)
+    private var lastPanel by mutableStateOf<Panel?>(null)
+    private var stamp by mutableIntStateOf(0)
+    private var positionMs by mutableLongStateOf(0L)
+    private var durationMs by mutableLongStateOf(0L)
+    private var seekPreviewMs by mutableStateOf<Long?>(null)
+    private var cues by mutableStateOf<List<Cue>>(emptyList())
+    private var cueDelayMs by mutableLongStateOf(0L)
+    private var subNote by mutableStateOf("")
+    private var speed by mutableFloatStateOf(1f)
+    private var chapters by mutableStateOf<List<ChapterMark>>(emptyList())
+    private var audioStreams by mutableStateOf<List<MediaStreamInfo>>(emptyList())
+    private var subStreams by mutableStateOf<List<MediaStreamInfo>>(emptyList())
+    private var selectedSub by mutableStateOf<Int?>(null)
+    private var selectedAudio by mutableStateOf<Int?>(null)
+    private var remoteHits by mutableStateOf<List<RemoteSubtitle>>(emptyList())
+    private var remoteNote by mutableStateOf("")
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        libraryEmpty = intent.getBooleanExtra(EXTRA_LIBRARY_EMPTY, false)
+        val itemId = intent.getStringExtra(EXTRA_ID).orEmpty()
+        val fromStart = intent.getBooleanExtra(EXTRA_FROM_START, false)
+        exo = buildPlayer()
+        setContent { LivingRoomTheme { PlayerScreen() } }
+        lifecycleScope.launch {
+            while (isActive) {
+                delay(10_000)
+                if (exo?.isPlaying == true) report()
+            }
+        }
+        if (itemId.isBlank()) {
+            showError(IllegalStateException("missing"))
+        } else {
+            start(itemId, fromStart)
+        }
+    }
+
+    private fun buildPlayer(): ExoPlayer {
+        val dataSource = DefaultHttpDataSource.Factory()
+            .setUserAgent("LivingRoomTV/1.1")
+            .setDefaultRequestProperties(mapOf("X-Emby-Token" to store.token.orEmpty()))
+            .setConnectTimeoutMs(20_000)
+            .setReadTimeoutMs(60_000)
+            .setAllowCrossProtocolRedirects(true)
+        val renderers = DefaultRenderersFactory(this).setEnableDecoderFallback(true)
+        val selector = DefaultTrackSelector(this)
+        selector.parameters = selector.buildUponParameters()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .setTunnelingEnabled(false)
+            .build()
+        return ExoPlayer.Builder(this, renderers)
+            .setTrackSelector(selector)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+            .build()
+            .also { player ->
+                player.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(state: Int) {
+                        loading = state == Player.STATE_BUFFERING || state == Player.STATE_IDLE && error == null && plan == null
+                        if (state == Player.STATE_READY) {
+                            loading = false
+                            loadingNote = ""
+                            durationMs = player.duration.takeIf { it > 0 } ?: durationMs
+                            if (!sentStart) report()
+                        }
+                        if (state == Player.STATE_ENDED) {
+                            reportStop()
+                            finish()
+                        }
+                    }
+
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        playing = isPlaying
+                        if (sentStart) report()
+                    }
+
+                    override fun onTracksChanged(tracks: Tracks) {
+                        applyPendingTracks(tracks)
+                    }
+
+                    override fun onPlayerError(failure: PlaybackException) {
+                        if (!retriedTranscode && plan != null && !forcedTranscode) {
+                            retriedTranscode = true
+                            loadingNote = "Converting for this TV…"
+                            prepare(currentTicks(), forceTranscode = true)
+                        } else {
+                            showError(failure)
+                        }
+                    }
+                })
+            }
+    }
+
+    override fun onPause() {
+        if (isFinishing) {
+            reportStop()
+        } else {
+            exo?.pause()
+            report()
+        }
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        reportStop()
+        exo?.release()
+        exo = null
+        super.onDestroy()
+    }
+
+    private fun start(itemId: String, fromStart: Boolean) {
+        lifecycleScope.launch {
+            try {
+                loading = true
+                var loaded = withContext(Dispatchers.IO) { api.item(itemId) }
+                movie = loaded
+                title = loaded.name
+                chapters = loaded.chapters
+                durationMs = loaded.runtimeTicks / 10_000L
+                subtitleIndex = preferredSubtitleIndex(loaded.streams, store.subtitleLanguage)
+                if (store.autoSubtitles && subtitleIndex == null) {
+                    val language = SUB_LANGS.find { it.code == store.subtitleLanguage }?.label ?: "English"
+                    loadingNote = "Looking for $language subtitles…"
+                    runCatching {
+                        val hits = withContext(Dispatchers.IO) { api.remoteSubtitles(loaded.id, store.subtitleLanguage) }
+                        val best = hits.firstOrNull() ?: return@runCatching
+                        withContext(Dispatchers.IO) { api.downloadSubtitle(loaded.id, best.id) }
+                        loaded = withContext(Dispatchers.IO) { api.item(loaded.id) }
+                        movie = loaded
+                        subtitleIndex = preferredSubtitleIndex(loaded.streams, store.subtitleLanguage)
+                    }
+                    loadingNote = ""
+                }
+                prepare(if (fromStart) 0L else loaded.positionTicks, forceTranscode = false)
+            } catch (failure: Exception) {
+                showError(failure)
+            }
+        }
+    }
+
+    private fun prepare(atTicks: Long, forceTranscode: Boolean) {
+        val current = movie ?: return
+        prepareJob?.cancel()
+        prepareJob = lifecycleScope.launch {
+            error = null
+            loading = true
+            val previous = plan
+            try {
+                val chosen = current.streams.find { it.type == "Subtitle" && it.index == subtitleIndex }
+                val bitmap = chosen != null && !chosen.isTextSubtitle()
+                var next = withContext(Dispatchers.IO) {
+                    previous?.let { api.stopEncoding(it.playSessionId) }
+                    api.playback(current.id, atTicks, audioIndex, chosen?.takeIf { !bitmap }?.index, burn = false, forceTranscode = forceTranscode)
+                }
+                if (bitmap && next.hls) {
+                    if (subsChosen) {
+                        loadingNote = "Adding subtitles to the picture…"
+                        next = withContext(Dispatchers.IO) {
+                            api.stopEncoding(next.playSessionId)
+                            api.playback(current.id, atTicks, audioIndex, chosen!!.index, burn = true, forceTranscode = true)
+                        }
+                    } else {
+                        subtitleIndex = null
+                    }
+                }
+                if (previous != null && previous.playSessionId != next.playSessionId) reportStopFor(previous)
+                plan = next
+                forcedTranscode = forceTranscode || next.burn
+                sentStart = false
+                reportedStop = false
+                val streams = next.source.streams.ifEmpty { current.streams }
+                audioStreams = streams.filter { it.type == "Audio" }
+                subStreams = streams.filter { it.type == "Subtitle" }
+                selectedAudio = audioIndex ?: next.source.defaultAudioIndex ?: audioStreams.firstOrNull { it.isDefault }?.index
+                selectedSub = subtitleIndex
+                val player = exo ?: return@launch
+                pendingTextTrack = if (bitmap && !next.hls) chosen else null
+                pendingAudioTrack = if (!next.hls) audioStreams.find { it.index == audioIndex } else null
+                setTextTrackEnabled(pendingTextTrack != null)
+                player.setMediaItem(mediaItem(current.id, next), atTicks / 10_000L)
+                player.prepare()
+                player.playWhenReady = true
+                loadCues(current.id, next, chosen?.takeIf { !bitmap })
+            } catch (failure: Exception) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                showError(failure)
+            }
+        }
+    }
+
+    private fun loadCues(itemId: String, plan: PlaybackPlan, stream: MediaStreamInfo?) {
+        subtitleJob?.cancel()
+        cues = emptyList()
+        subNote = ""
+        if (stream == null) return
+        subtitleJob = lifecycleScope.launch {
+            subNote = "Loading subtitles…"
+            try {
+                val text = withContext(Dispatchers.IO) { api.subtitleVtt(itemId, plan.source.id, stream.index) }
+                cues = withContext(Dispatchers.Default) { parseCues(text) }
+                subNote = if (cues.isEmpty()) "These subtitles are empty." else ""
+            } catch (failure: Exception) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                subNote = "Couldn't load these subtitles."
+            }
+            if (subNote.isNotBlank() && cues.isEmpty()) {
+                delay(4_000)
+                subNote = ""
+            }
+        }
+    }
+
+    private fun mediaItem(itemId: String, plan: PlaybackPlan): MediaItem {
+        val url = api.streamUrl(itemId, plan)
+        val container = plan.source.container.lowercase()
+        val mime = when {
+            plan.hls -> MimeTypes.APPLICATION_M3U8
+            container.contains("mkv") || container.contains("matroska") || container.contains("webm") -> MimeTypes.VIDEO_MATROSKA
+            container.contains("ts") -> MimeTypes.VIDEO_MP2T
+            else -> MimeTypes.VIDEO_MP4
+        }
+        return MediaItem.Builder().setUri(url).setMimeType(mime).build()
+    }
+
+    private fun setTextTrackEnabled(on: Boolean) {
+        val player = exo ?: return
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !on)
+            .apply { if (!on) clearOverridesOfType(C.TRACK_TYPE_TEXT) }
+            .build()
+    }
+
+    private fun applyPendingTracks(tracks: Tracks) {
+        val player = exo ?: return
+        val params = player.trackSelectionParameters.buildUpon()
+        var changed = false
+        pendingTextTrack?.let { stream ->
+            val group = matchGroup(tracks, C.TRACK_TYPE_TEXT, subStreams.filter { !it.isExternal }, stream)
+            if (group != null) {
+                params.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+                pendingTextTrack = null
+                changed = true
+            }
+        }
+        pendingAudioTrack?.let { stream ->
+            val group = matchGroup(tracks, C.TRACK_TYPE_AUDIO, audioStreams.filter { !it.isExternal }, stream)
+            if (group != null) {
+                params.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+                pendingAudioTrack = null
+                changed = true
+            }
+        }
+        if (changed) player.trackSelectionParameters = params.build()
+    }
+
+    private fun matchGroup(tracks: Tracks, type: Int, embedded: List<MediaStreamInfo>, wanted: MediaStreamInfo): Tracks.Group? {
+        val groups = tracks.groups.filter { it.type == type }
+        if (groups.isEmpty()) return null
+        val order = embedded.sortedBy { it.index }.indexOfFirst { it.index == wanted.index }
+        if (groups.size == embedded.size && order in groups.indices) return groups[order]
+        val language = wanted.language.lowercase()
+        return groups.firstOrNull { group ->
+            val format = group.getTrackFormat(0)
+            language.isNotBlank() && format.language?.lowercase()?.let { it == language || it.take(2) == language.take(2) } == true
+        } ?: groups.getOrNull(order)
+    }
+
+    private fun currentTicks(): Long {
+        val player = exo ?: return 0L
+        return player.currentPosition.coerceAtLeast(0L) * 10_000L
+    }
+
+    private fun report() {
+        val currentPlan = plan ?: return
+        val current = movie ?: return
+        if (reportedStop) return
+        val path = if (!sentStart) "/Sessions/Playing" else "/Sessions/Playing/Progress"
+        sentStart = true
+        val ticks = currentTicks()
+        val paused = exo?.isPlaying != true
+        val audio = selectedAudio
+        val sub = selectedSub
+        app.background.launch {
+            runCatching { api.report(path, current.id, currentPlan, ticks, paused, audio, sub) }
+        }
+    }
+
+    private fun reportStop() {
+        val currentPlan = plan ?: return
+        if (reportedStop) return
+        reportedStop = true
+        reportStopFor(currentPlan)
+    }
+
+    private fun reportStopFor(target: PlaybackPlan) {
+        val current = movie ?: return
+        val player = exo
+        val ticks = if (player?.playbackState == Player.STATE_ENDED) current.runtimeTicks else currentTicks()
+        val audio = selectedAudio
+        val sub = selectedSub
+        app.background.launch {
+            runCatching { api.report("/Sessions/Playing/Stopped", current.id, target, ticks, true, audio, sub) }
+            if (target.hls) api.stopEncoding(target.playSessionId)
+        }
+    }
+
+    private fun showError(failure: Throwable) {
+        loading = false
+        loadingNote = ""
+        panel = null
+        error = playbackError(failure, libraryEmpty)
+    }
+
+    private fun retry() {
+        retriedTranscode = false
+        error = null
+        if (movie == null) {
+            start(intent.getStringExtra(EXTRA_ID).orEmpty(), false)
+        } else {
+            prepare(currentTicks().takeIf { it > 0 } ?: (movie?.positionTicks ?: 0L), forceTranscode = false)
+        }
+    }
+
+    private fun togglePlay() {
+        val player = exo ?: return
+        when {
+            player.playbackState == Player.STATE_ENDED -> {
+                player.seekTo(0)
+                player.play()
+            }
+            player.isPlaying -> player.pause()
+            else -> player.play()
+        }
+    }
+
+    private fun seekBy(deltaMs: Long) {
+        val player = exo ?: return
+        val duration = (player.duration.takeIf { it > 0 } ?: durationMs).coerceAtLeast(0L)
+        val base = pendingSeekMs ?: player.currentPosition
+        val target = (base + deltaMs).coerceIn(0L, if (duration > 0) duration - 1_000L else Long.MAX_VALUE)
+        pendingSeekMs = target
+        seekPreviewMs = target
+        seekJob?.cancel()
+        seekJob = lifecycleScope.launch {
+            delay(if (plan?.hls == true) 650 else 350)
+            exo?.seekTo(target)
+            pendingSeekMs = null
+            delay(900)
+            seekPreviewMs = null
+        }
+    }
+
+    private fun seekTo(ms: Long) {
+        pendingSeekMs = null
+        seekJob?.cancel()
+        seekPreviewMs = null
+        exo?.seekTo(ms.coerceAtLeast(0L))
+    }
+
+    private fun showControls() {
+        controls = true
+        stamp++
+    }
+
+    private fun openPanel(next: Panel) {
+        lastPanel = next
+        panel = next
+        stamp++
+    }
+
+    private fun closePanel() {
+        panel = null
+        showControls()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE) {
+            if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) goBack()
+            return true
+        }
+        if (event.action == KeyEvent.ACTION_UP) {
+            if (consumedUps.remove(code)) return true
+            return super.dispatchKeyEvent(event)
+        }
+        if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
+        if (handleKey(code, event.repeatCount)) {
+            consumedUps.add(code)
+            return true
+        }
+        if (controls) stamp++
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun goBack() {
+        when {
+            error != null -> finish()
+            panel == Panel.Online -> openPanel(Panel.Subtitles)
+            panel != null -> closePanel()
+            controls && !loading && exo?.isPlaying == true -> controls = false
+            else -> finish()
+        }
+    }
+
+    private fun handleKey(code: Int, repeat: Int): Boolean {
+        when (code) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> {
+                togglePlay()
+                if (exo?.isPlaying != true) showControls()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                exo?.play()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                exo?.pause()
+                showControls()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD, KeyEvent.KEYCODE_MEDIA_STEP_FORWARD -> {
+                seekBy(30_000)
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND, KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD, KeyEvent.KEYCODE_MEDIA_STEP_BACKWARD -> {
+                seekBy(-10_000)
+                return true
+            }
+        }
+        if (error != null || panel != null || controls) return false
+        when (code) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> seekBy(if (repeat > 2) -30_000 else -10_000)
+            KeyEvent.KEYCODE_DPAD_RIGHT -> seekBy(if (repeat > 2) 30_000 else 10_000)
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                togglePlay()
+                showControls()
+            }
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> showControls()
+            KeyEvent.KEYCODE_CAPTIONS -> {
+                showControls()
+                openPanel(Panel.Subtitles)
+            }
+            else -> return false
+        }
+        return true
+    }
+
+    private fun chooseSubtitle(index: Int?) {
+        subsChosen = true
+        panel = null
+        showControls()
+        val current = movie ?: return
+        val stream = current.streams.find { it.type == "Subtitle" && it.index == index }
+        val currentPlan = plan
+        subtitleIndex = index
+        selectedSub = index
+        cueDelayMs = 0L
+        when {
+            currentPlan == null -> Unit
+            stream == null -> {
+                loadCues(current.id, currentPlan, null)
+                setTextTrackEnabled(false)
+                if (currentPlan.burn) prepare(currentTicks(), forceTranscode = false)
+                else report()
+            }
+            stream.isTextSubtitle() -> {
+                setTextTrackEnabled(false)
+                if (currentPlan.burn) {
+                    prepare(currentTicks(), forceTranscode = false)
+                } else {
+                    loadCues(current.id, currentPlan, stream)
+                    report()
+                }
+            }
+            !currentPlan.hls -> {
+                loadCues(current.id, currentPlan, null)
+                pendingTextTrack = stream
+                exo?.currentTracks?.let { applyPendingTracks(it) }
+                report()
+            }
+            else -> prepare(currentTicks(), forceTranscode = false)
+        }
+    }
+
+    private fun chooseAudio(index: Int) {
+        panel = null
+        showControls()
+        audioIndex = index
+        selectedAudio = index
+        val currentPlan = plan ?: return
+        if (!currentPlan.hls) {
+            pendingAudioTrack = audioStreams.find { it.index == index }
+            exo?.currentTracks?.let { applyPendingTracks(it) }
+            report()
+        } else {
+            retriedTranscode = false
+            prepare(currentTicks(), forceTranscode = currentPlan.burn)
+        }
+    }
+
+    private fun searchOnline() {
+        val current = movie ?: return
+        remoteHits = emptyList()
+        remoteNote = "Searching…"
+        openPanel(Panel.Online)
+        lifecycleScope.launch {
+            try {
+                val hits = withContext(Dispatchers.IO) { api.remoteSubtitles(current.id, store.subtitleLanguage) }
+                remoteHits = hits
+                remoteNote = if (hits.isEmpty()) "No subtitles found." else ""
+            } catch (failure: Exception) {
+                remoteNote = when {
+                    failure is JellyfinException && failure.code == 401 -> "Add an OpenSubtitles account in Settings first."
+                    failure is JellyfinException && failure.code == 404 -> "OpenSubtitles isn't installed on the server."
+                    else -> "Couldn't search for subtitles."
+                }
+            }
+        }
+    }
+
+    private fun useRemote(hit: RemoteSubtitle) {
+        val current = movie ?: return
+        lifecycleScope.launch {
+            remoteNote = "Downloading…"
+            try {
+                val before = current.streams.filter { it.type == "Subtitle" }.map { it.index }.toSet()
+                withContext(Dispatchers.IO) { api.downloadSubtitle(current.id, hit.id) }
+                val fresh = withContext(Dispatchers.IO) { api.item(current.id) }
+                movie = fresh
+                subStreams = fresh.streams.filter { it.type == "Subtitle" }
+                val added = fresh.streams.lastOrNull { it.type == "Subtitle" && it.index !in before }?.index
+                    ?: preferredSubtitleIndex(fresh.streams, store.subtitleLanguage)
+                subsChosen = true
+                subtitleIndex = added
+                selectedSub = added
+                panel = null
+                showControls()
+                retriedTranscode = false
+                prepare(currentTicks(), forceTranscode = false)
+            } catch (_: Exception) {
+                remoteNote = "That subtitle didn't download."
+            }
+        }
+    }
+
+    private fun changeSpeed(next: Float) {
+        speed = next
+        exo?.setPlaybackSpeed(next)
+        panel = null
+        showControls()
+    }
+
+    @Composable
+    private fun PlayerScreen() {
+        LaunchedEffect(Unit) {
+            while (isActive) {
+                exo?.let { player ->
+                    positionMs = player.currentPosition.coerceAtLeast(0L)
+                    player.duration.takeIf { it > 0 }?.let { durationMs = it }
+                }
+                delay(250)
+            }
+        }
+        LaunchedEffect(loading, plan) {
+            if (!loading || plan?.hls != true) return@LaunchedEffect
+            delay(12_000)
+            if (loading && loadingNote.isBlank()) {
+                loadingNote = "Still starting. The server is converting this movie for this TV, which can be slow for 4K."
+            }
+        }
+        LaunchedEffect(controls, panel, stamp, playing, loading) {
+            if (!controls || panel != null || !playing || loading) return@LaunchedEffect
+            delay(store.controlsSeconds * 1000L)
+            controls = false
+        }
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            exo?.let { player ->
+                AndroidView(
+                    factory = { context ->
+                        PlayerView(context).apply {
+                            useController = false
+                            isFocusable = false
+                            isFocusableInTouchMode = false
+                            this.player = player
+                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            setShutterBackgroundColor(android.graphics.Color.BLACK)
+                            setKeepContentOnPlayerReset(true)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            Subtitles()
+            if (loading && error == null) {
+                Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Cream, strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
+                    if (loadingNote.isNotBlank()) Text(loadingNote, style = TvType.body, color = Cream, modifier = Modifier.padding(top = 14.dp))
+                }
+            }
+            val preview = seekPreviewMs
+            if (preview != null && !controls && error == null) {
+                SeekStrip(preview)
+            }
+            AnimatedVisibility(controls && panel == null && error == null, enter = fadeIn(), exit = fadeOut()) {
+                Controls()
+            }
+            panel?.let { PanelSheet(it) }
+            error?.let { ErrorOverlay(it) }
+        }
+    }
+
+    @Composable
+    private fun Subtitles() {
+        var line by remember { mutableStateOf("") }
+        LaunchedEffect(cues, cueDelayMs) {
+            if (cues.isEmpty()) {
+                line = ""
+                return@LaunchedEffect
+            }
+            while (isActive) {
+                val at = (exo?.currentPosition ?: 0L) - cueDelayMs
+                line = cueAt(cues, at)
+                delay(100)
+            }
+        }
+        val lift = if (controls && panel == null) 150.dp else 36.dp
+        Box(Modifier.fillMaxSize().padding(bottom = lift, start = 80.dp, end = 80.dp), contentAlignment = Alignment.BottomCenter) {
+            if (line.isNotBlank()) {
+                Text(
+                    line,
+                    textAlign = TextAlign.Center,
+                    style = TextStyle(
+                        fontFamily = Inter,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = (19f * store.cueScale).sp,
+                        lineHeight = (25f * store.cueScale).sp,
+                        color = Color.White,
+                        shadow = Shadow(Color.Black, blurRadius = 6f)
+                    ),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0x8C000000))
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                )
+            }
+            if (subNote.isNotBlank() && line.isBlank()) {
+                Text(subNote, style = TvType.small, color = Cream, modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Glass).padding(horizontal = 10.dp, vertical = 5.dp))
+            }
+        }
+    }
+
+    @Composable
+    private fun SeekStrip(targetMs: Long) {
+        Box(Modifier.fillMaxSize().padding(horizontal = SafeX, vertical = SafeY), contentAlignment = Alignment.BottomCenter) {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Glass).padding(horizontal = 18.dp, vertical = 12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val delta = targetMs - positionMs
+                    Text(clock(targetMs), style = TvType.title, color = Cream)
+                    Text(
+                        "   ${if (delta >= 0) "+" else "−"}${clock(kotlin.math.abs(delta))}",
+                        style = TvType.body
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(clock(durationMs), style = TvType.body)
+                }
+                Spacer(Modifier.height(8.dp))
+                ProgressTrack(positionMs, targetMs, focused = true)
+            }
+        }
+    }
+
+    @Composable
+    private fun ProgressTrack(current: Long, marker: Long?, focused: Boolean) {
+        val total = durationMs.coerceAtLeast(1L)
+        val played = (current.toFloat() / total).coerceIn(0f, 1f)
+        BoxWithConstraints(Modifier.fillMaxWidth().height(14.dp), contentAlignment = Alignment.CenterStart) {
+            val trackHeight = if (focused) 6.dp else 4.dp
+            Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = 0.25f))) {
+                Box(Modifier.fillMaxHeight().fillMaxWidth(played).background(Color.White))
+            }
+            chapters.forEach { chapter ->
+                val at = (chapter.startTicks / 10_000f / total).coerceIn(0f, 1f)
+                if (at > 0.005f) Box(Modifier.offset(x = maxWidth * at).width(2.dp).height(trackHeight).background(Color.Black.copy(alpha = 0.55f)))
+            }
+            if (marker != null || focused) {
+                val at = ((marker ?: current).toFloat() / total).coerceIn(0f, 1f)
+                Box(Modifier.offset(x = maxWidth * at - 7.dp).size(14.dp).clip(CircleShape).background(Color.White))
+            }
+        }
+    }
+
+    @Composable
+    private fun Controls() {
+        val playFocus = remember { FocusRequester() }
+        val subsFocus = remember { FocusRequester() }
+        val audioFocus = remember { FocusRequester() }
+        val chaptersFocus = remember { FocusRequester() }
+        val speedFocus = remember { FocusRequester() }
+        LaunchedEffect(Unit) {
+            val target = when (lastPanel) {
+                Panel.Subtitles, Panel.Online -> subsFocus
+                Panel.Audio -> audioFocus
+                Panel.Chapters -> chaptersFocus
+                Panel.Speed -> speedFocus
+                null -> playFocus
+            }
+            lastPanel = null
+            delay(30)
+            runCatching { target.requestFocus() }.onFailure { runCatching { playFocus.requestFocus() } }
+        }
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier.fillMaxWidth().height(130.dp).background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
+            )
+            Box(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(230.dp)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000))))
+            )
+            Column(Modifier.padding(horizontal = SafeX, vertical = SafeY)) {
+                Text(title, style = TvType.headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val left = (durationMs - positionMs).coerceAtLeast(0L)
+                if (durationMs > 0) Text("Ends at ${endsLabel(left * 10_000L)}", style = TvType.body, modifier = Modifier.padding(top = 4.dp))
+            }
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = SafeX, vertical = SafeY)
+            ) {
+                Scrubber()
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    Text(clock(positionMs), style = TvType.body, color = Cream)
+                    Spacer(Modifier.weight(1f))
+                    Text("−" + clock((durationMs - positionMs).coerceAtLeast(0L)), style = TvType.body)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TvButton("10", icon = R.drawable.ic_replay) { seekBy(-10_000) }
+                    TvButton(
+                        if (playing) "Pause" else "Play",
+                        Modifier.width(96.dp),
+                        icon = if (playing) R.drawable.ic_pause else R.drawable.ic_play,
+                        primary = true,
+                        focusRequester = playFocus
+                    ) { togglePlay() }
+                    TvButton("10", icon = R.drawable.ic_forward) { seekBy(10_000) }
+                    Spacer(Modifier.weight(1f))
+                    val subLabel = subStreams.find { it.index == selectedSub }?.let { shortLabel(it) } ?: "Off"
+                    TvButton("Subtitles · $subLabel", icon = R.drawable.ic_subs, focusRequester = subsFocus) { openPanel(Panel.Subtitles) }
+                    if (audioStreams.size > 1) {
+                        val audioLabel = audioStreams.find { it.index == selectedAudio }?.let { shortLabel(it) } ?: "Audio"
+                        TvButton(audioLabel, icon = R.drawable.ic_audio, focusRequester = audioFocus) { openPanel(Panel.Audio) }
+                    }
+                    if (chapters.size > 1) TvButton("Chapters", icon = R.drawable.ic_chapters, focusRequester = chaptersFocus) { openPanel(Panel.Chapters) }
+                    TvButton(if (speed == 1f) "1×" else "${speed}×", icon = R.drawable.ic_speed, focusRequester = speedFocus) { openPanel(Panel.Speed) }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun Scrubber() {
+        val interaction = remember { MutableInteractionSource() }
+        val focused by interaction.collectIsFocusedAsState()
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                    when (event.key) {
+                        Key.DirectionLeft -> {
+                            seekBy(if (event.nativeKeyEvent.repeatCount > 2) -30_000 else -10_000)
+                            stamp++
+                            true
+                        }
+                        Key.DirectionRight -> {
+                            seekBy(if (event.nativeKeyEvent.repeatCount > 2) 30_000 else 10_000)
+                            stamp++
+                            true
+                        }
+                        Key.DirectionCenter, Key.Enter -> {
+                            togglePlay()
+                            true
+                        }
+                        else -> false
+                    }
+                }
+                .focusable(interactionSource = interaction)
+        ) {
+            if (focused) {
+                val preview = seekPreviewMs
+                Text(
+                    if (preview != null) clock(preview) else "◀  ▶  to skip",
+                    style = TvType.small,
+                    color = Cream,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
+            ProgressTrack(positionMs, seekPreviewMs, focused)
+        }
+    }
+
+    @Composable
+    private fun PanelSheet(which: Panel) {
+        Box(Modifier.fillMaxSize().background(Color(0x66000000))) {
+            Column(
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .width(340.dp)
+                    .background(Color(0xF014161D))
+                    .padding(horizontal = 22.dp, vertical = SafeY)
+            ) {
+                val heading = when (which) {
+                    Panel.Subtitles -> "Subtitles"
+                    Panel.Online -> "Find subtitles online"
+                    Panel.Audio -> "Audio"
+                    Panel.Chapters -> "Chapters"
+                    Panel.Speed -> "Playback speed"
+                }
+                Text(heading, style = TvType.headline, modifier = Modifier.padding(bottom = 12.dp))
+                val rows = panelRows(which)
+                val start = rows.indexOfFirst { it.selected }.coerceAtLeast(0)
+                val list = rememberLazyListState(initialFirstVisibleItemIndex = (start - 2).coerceAtLeast(0))
+                val focus = remember { FocusRequester() }
+                LaunchedEffect(which, rows.size) {
+                    delay(30)
+                    runCatching { focus.requestFocus() }
+                }
+                if (which == Panel.Online && remoteNote.isNotBlank()) {
+                    Text(remoteNote, style = TvType.body, color = Cream, modifier = Modifier.padding(bottom = 10.dp))
+                }
+                LazyColumn(state = list, verticalArrangement = Arrangement.spacedBy(4.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
+                    itemsIndexed(rows) { index, row ->
+                        PanelRow(row, if (index == start) focus else null)
+                    }
+                }
+            }
+        }
+    }
+
+    private class PanelItem(val label: String, val detail: String = "", val selected: Boolean = false, val action: () -> Unit)
+
+    private fun panelRows(which: Panel): List<PanelItem> = when (which) {
+        Panel.Subtitles -> buildList {
+            add(PanelItem("Off", selected = selectedSub == null) { chooseSubtitle(null) })
+            subStreams.forEach { stream ->
+                val detail = when {
+                    stream.isTextSubtitle() -> ""
+                    plan?.hls == true -> "Image subtitles · slower to start"
+                    else -> "Image subtitles"
+                }
+                add(PanelItem(stream.label(), detail, selectedSub == stream.index) { chooseSubtitle(stream.index) })
+            }
+            if (cues.isNotEmpty()) {
+                add(PanelItem("Show earlier", "Now ${delayText(cueDelayMs)}") { cueDelayMs -= 250; stamp++ })
+                add(PanelItem("Show later", "Now ${delayText(cueDelayMs)}") { cueDelayMs += 250; stamp++ })
+            }
+            add(PanelItem("Find more online", SUB_LANGS.find { it.code == store.subtitleLanguage }?.label ?: "") { searchOnline() })
+        }
+        Panel.Online -> remoteHits.take(30).map { hit -> PanelItem(hit.name.ifBlank { "Subtitle" }, hit.label().substringAfter(" · ", "")) { useRemote(hit) } }
+        Panel.Audio -> audioStreams.map { stream ->
+            PanelItem(stream.label(), stream.codec.uppercase() + if (stream.channels > 0) " · ${channelText(stream.channels)}" else "", selectedAudio == stream.index) {
+                chooseAudio(stream.index)
+            }
+        }
+        Panel.Chapters -> {
+            val nowTicks = positionMs * 10_000L
+            val current = chapters.indexOfLast { it.startTicks <= nowTicks + 20_000_000L }
+            chapters.mapIndexed { index, chapter ->
+                PanelItem(chapter.name.ifBlank { "Chapter ${index + 1}" }, ticksToClock(chapter.startTicks), index == current) {
+                    seekTo(chapter.startTicks / 10_000L)
+                    panel = null
+                    showControls()
+                }
+            }
+        }
+        Panel.Speed -> listOf(0.75f, 1f, 1.25f, 1.5f, 2f).map { value ->
+            PanelItem(if (value == 1f) "Normal" else "${value}×", selected = speed == value) { changeSpeed(value) }
+        }
+    }
+
+    @Composable
+    private fun PanelRow(row: PanelItem, requester: FocusRequester?) {
+        val interaction = remember { MutableInteractionSource() }
+        val focused by interaction.collectIsFocusedAsState()
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (focused) Color.White else Color.Transparent)
+                .border(if (row.selected && !focused) 1.dp else 0.dp, if (row.selected && !focused) Line else Color.Transparent, RoundedCornerShape(12.dp))
+                .clickable(interaction, indication = null, onClick = row.action)
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.width(18.dp)) {
+                if (row.selected) Text("✓", style = TvType.button, color = if (focused) Color(0xFF111111) else Cream)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(row.label, style = TvType.button, color = if (focused) Color(0xFF111111) else Cream, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (row.detail.isNotBlank()) {
+                    Text(row.detail, style = TvType.small, color = if (focused) Color(0xFF444444) else Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun ErrorOverlay(message: String) {
+        val tryFocus = remember { FocusRequester() }
+        LaunchedEffect(message) {
+            delay(30)
+            runCatching { tryFocus.requestFocus() }
+        }
+        Box(Modifier.fillMaxSize().background(Color(0xE6000000)), contentAlignment = Alignment.Center) {
+            Column(Modifier.width(520.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (title.isNotBlank()) Kicker(title)
+                Text(message, style = TvType.title, color = Cream, textAlign = TextAlign.Center)
+                Row(Modifier.padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TvButton("Try again", primary = true, focusRequester = tryFocus) { retry() }
+                    TvButton("Back") { finish() }
+                }
+            }
+        }
+    }
+
+    companion object {
+        const val EXTRA_ID = "id"
+        const val EXTRA_FROM_START = "fromStart"
+        const val EXTRA_LIBRARY_EMPTY = "libraryEmpty"
+    }
+}
+
+private fun clock(ms: Long): String = ticksToClock(ms * 10_000L)
+
+private fun delayText(ms: Long): String = when {
+    ms == 0L -> "on time"
+    ms < 0 -> "%.2fs earlier".format(-ms / 1000f)
+    else -> "%.2fs later".format(ms / 1000f)
+}
+
+private fun channelText(channels: Int): String = when (channels) {
+    1 -> "Mono"
+    2 -> "Stereo"
+    6 -> "5.1"
+    8 -> "7.1"
+    else -> "$channels ch"
+}
+
+private fun shortLabel(stream: MediaStreamInfo): String {
+    val base = stream.languageName().ifBlank { if (stream.type == "Subtitle") "On" else "Audio" }
+    return if (base.length > 14) base.take(13) + "…" else base
+}
