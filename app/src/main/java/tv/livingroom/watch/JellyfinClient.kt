@@ -450,8 +450,8 @@ class JellyfinClient(
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     companion object {
-        /** Enough for a poster and the detail backdrop. Cast and plot load when a movie opens. */
-        const val GRID_FIELDS = "BackdropImageTags"
+        /** Enough for a poster and the top of the detail page. Cast and the rest load when a movie opens. */
+        const val GRID_FIELDS = "Overview,Genres,BackdropImageTags"
         const val HOME_FIELDS = "Overview,BackdropImageTags"
         const val OPEN_SUBTITLES = "4b9ed42f518548b598036ff2989014c4"
         private const val MAX_BITRATE = 150_000_000
