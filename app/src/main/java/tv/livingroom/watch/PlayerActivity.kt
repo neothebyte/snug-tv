@@ -144,6 +144,9 @@ class PlayerActivity : ComponentActivity() {
     private var selectedAudio by mutableStateOf<Int?>(null)
     private var remoteHits by mutableStateOf<List<RemoteSubtitle>>(emptyList())
     private var remoteNote by mutableStateOf("")
+    /** The episode offered when one finishes; null the rest of the time. */
+    private var upNext by mutableStateOf<Movie?>(null)
+    private var nextJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -200,7 +203,8 @@ class PlayerActivity : ComponentActivity() {
                         }
                         if (state == Player.STATE_ENDED) {
                             reportStop()
-                            finish()
+                            val ended = movie
+                            if (ended?.isEpisode == true) offerNext(ended) else finish()
                         }
                     }
 
@@ -258,7 +262,7 @@ class PlayerActivity : ComponentActivity() {
                 loading = true
                 var loaded = withContext(Dispatchers.IO) { api.item(itemId) }
                 movie = loaded
-                title = loaded.name
+                title = if (loaded.isEpisode) "${loaded.seriesName} · ${loaded.cardTitle}" else loaded.name
                 chapters = loaded.chapters
                 durationMs = loaded.runtimeTicks / 10_000L
                 subtitleIndex = preferredSubtitleIndex(loaded.streams, store.subtitleLanguage)
@@ -490,6 +494,48 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /** Looks up the episode after [ended] and offers it, or closes the player at the end of the show. */
+    private fun offerNext(ended: Movie) {
+        nextJob?.cancel()
+        nextJob = lifecycleScope.launch {
+            val next = runCatching { withContext(Dispatchers.IO) { api.episodeAfter(ended) } }.getOrNull()
+            if (next == null) {
+                finish()
+                return@launch
+            }
+            panel = null
+            controls = false
+            upNext = next
+        }
+    }
+
+    /** Starts the offered episode in this same player, forgetting everything about the one that ended. */
+    private fun playNext() {
+        val next = upNext ?: return
+        upNext = null
+        nextJob?.cancel()
+        prepareJob?.cancel()
+        plan = null
+        sentStart = false
+        reportedStop = false
+        floor = PlayMode.Direct
+        retriedNetwork = false
+        subtitleIndex = null
+        audioIndex = null
+        subsChosen = false
+        pendingTextTrack = null
+        pendingAudioTrack = null
+        subtitleJob?.cancel()
+        cues = emptyList()
+        subNote = ""
+        remoteHits = emptyList()
+        remoteNote = ""
+        positionMs = 0L
+        durationMs = 0L
+        intent.putExtra(EXTRA_ID, next.id)
+        start(next.id, false)
+    }
+
     private fun showError(failure: Throwable) {
         loading = false
         loadingNote = ""
@@ -581,6 +627,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun goBack() {
         when {
+            upNext != null -> finish()
             error != null -> finish()
             panel == Panel.Online -> openPanel(Panel.Subtitles)
             panel != null -> closePanel()
@@ -590,6 +637,8 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun handleKey(code: Int, repeat: Int): Boolean {
+        // The up-next card's buttons take the remote while it shows.
+        if (upNext != null) return false
         when (code) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> {
                 togglePlay()
@@ -786,11 +835,47 @@ class PlayerActivity : ComponentActivity() {
             if (preview != null && !controls && error == null) {
                 SeekStrip(preview)
             }
-            AnimatedVisibility(controls && panel == null && error == null, enter = fadeIn(), exit = fadeOut()) {
+            AnimatedVisibility(controls && panel == null && error == null && upNext == null, enter = fadeIn(), exit = fadeOut()) {
                 Controls()
             }
             panel?.let { PanelSheet(it) }
             error?.let { ErrorOverlay(it) }
+            upNext?.let { UpNextOverlay(it) }
+        }
+    }
+
+    @Composable
+    private fun UpNextOverlay(next: Movie) {
+        val playFocus = remember { FocusRequester() }
+        var left by remember(next.id) { mutableIntStateOf(UP_NEXT_SECONDS) }
+        LaunchedEffect(next.id) {
+            delay(30)
+            runCatching { playFocus.requestFocus() }
+            while (left > 0) {
+                delay(1_000)
+                left--
+            }
+            playNext()
+        }
+        Box(Modifier.fillMaxSize().background(Color(0xE6000000)), contentAlignment = Alignment.Center) {
+            Column(Modifier.width(560.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Kicker("Up next")
+                Text(next.cardTitle, style = TvType.headline, color = Cream, textAlign = TextAlign.Center)
+                if (next.overview.isNotBlank()) {
+                    Text(
+                        next.overview,
+                        style = TvType.body,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                Row(Modifier.padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TvButton("Play now ($left)", primary = true, focusRequester = playFocus) { playNext() }
+                    TvButton("Back") { finish() }
+                }
+            }
         }
     }
 
@@ -1115,6 +1200,7 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_FROM_START = "fromStart"
         const val EXTRA_LIBRARY_EMPTY = "libraryEmpty"
         private const val MB = 1024L * 1024L
+        private const val UP_NEXT_SECONDS = 10
     }
 }
 

@@ -54,6 +54,9 @@ sealed interface Screen {
     data object Home : Screen { override val key = "home" }
     data object Search : Screen { override val key = "search" }
     data object Movies : Screen { override val key = "movies" }
+    data object Shows : Screen { override val key = "shows" }
+    /** A show's page. [episodeId] is the episode to land on, when it was opened from one. */
+    data class Series(val id: String, val episodeId: String? = null) : Screen { override val key = "series:$id" }
     data object Genres : Screen { override val key = "genres" }
     data class Genre(val name: String) : Screen { override val key = "genre:$name" }
     data class Detail(val id: String) : Screen { override val key = "detail:$id" }

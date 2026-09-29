@@ -205,7 +205,7 @@ fun PosterCard(
                 )
             } else {
                 Text(
-                    movie.name,
+                    movie.cardTitle,
                     style = TvType.small,
                     color = Cream,
                     modifier = Modifier.align(Alignment.Center).padding(8.dp)
@@ -232,7 +232,7 @@ fun PosterCard(
         if (showTitle) {
             Spacer(Modifier.height(if (focused) 10.dp else 6.dp))
             Text(
-                movie.name,
+                movie.cardTitle,
                 style = TvType.small,
                 color = if (focused) Cream else Faint,
                 maxLines = 1,

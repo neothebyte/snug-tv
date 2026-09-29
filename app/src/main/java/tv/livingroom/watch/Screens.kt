@@ -98,11 +98,12 @@ fun WatchApp(vm: AppModel) {
     val backdropMovie = when (screen) {
         Screen.Home -> vm.featured()
         is Screen.Detail -> vm.movieFor(screen.id)
+        is Screen.Series -> vm.shows[screen.id]?.series
         else -> null
     }
-    val shot = backdropMovie?.let { api.imageUrl(it.id, "Backdrop", it.backdropTag, 1920) }
+    val shot = backdropMovie?.let { api.backdropUrl(it, 1920) }
     Box(Modifier.fillMaxSize().background(Ink)) {
-        FullBackdrop(shot, strong = screen is Screen.Detail)
+        FullBackdrop(shot, strong = screen is Screen.Detail || screen is Screen.Series)
         if (screen is Screen.Login) {
             LoginScreen(vm)
             return@Box
@@ -121,6 +122,8 @@ fun WatchApp(vm: AppModel) {
                 Screen.Home -> HomeScreen(vm, play)
                 Screen.Search -> SearchScreen(vm)
                 Screen.Movies -> GridScreen(vm, "Movies", tools = true)
+                Screen.Shows -> GridScreen(vm, "TV shows", noun = "show")
+                is Screen.Series -> SeriesScreen(vm, screen, play)
                 is Screen.Genre -> GridScreen(vm, screen.name)
                 is Screen.Person -> GridScreen(vm, screen.name, kicker = screen.role.ifBlank { "Credits" })
                 Screen.Genres -> GenresScreen(vm)
@@ -138,7 +141,7 @@ fun WatchApp(vm: AppModel) {
             )
         }
         Rail(vm, onFocus = { railFocused = it })
-        if (vm.message.isNotBlank() && screen !is Screen.Detail) {
+        if (vm.message.isNotBlank() && screen !is Screen.Detail && screen !is Screen.Series) {
             Text(
                 vm.message,
                 style = TvType.body,
@@ -164,6 +167,7 @@ private fun Rail(vm: AppModel, onFocus: (Boolean) -> Unit) {
         Triple(Screen.Search, "Search", R.drawable.ic_search),
         Triple(Screen.Home, "Home", R.drawable.ic_home),
         Triple(Screen.Movies, "Movies", R.drawable.ic_movies),
+        Triple(Screen.Shows, "TV shows", R.drawable.ic_tv),
         Triple(Screen.Genres, "Genres", R.drawable.ic_genres),
         Triple(Screen.Settings, "Settings", R.drawable.ic_settings)
     )
@@ -527,7 +531,8 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                 else -> "Recently added"
             }
             Kicker(kicker)
-            Text(featured.name, style = TvType.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(featured.headline, style = TvType.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (featured.isEpisode) Text(featured.cardTitle, style = TvType.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(8.dp))
             MetaLine(featured, showEnds = featured.positionTicks > 0)
             if (featured.overview.isNotBlank()) {
@@ -570,7 +575,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                         ) { play(hero.id, false) }
                         TvButton("Details", onFocus = backToHero) {
                             vm.rememberFocus("actions")
-                            vm.open(Screen.Detail(hero.id))
+                            vm.openItem(hero)
                         }
                         TvButton("Surprise me", onFocus = backToHero) { vm.surprise(play) }
                     }
@@ -593,7 +598,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                                     val key = "home/${shelf.title}/${movie.id}"
                                     PosterCard(
                                         movie,
-                                        vm.api.imageUrl(movie.id, "Primary", movie.primaryTag, 360),
+                                        vm.api.posterUrl(movie),
                                         autoFocus = restore == key,
                                         onFocus = {
                                             focusedId = movie.id
@@ -601,7 +606,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                                         }
                                     ) {
                                         vm.rememberFocus(key)
-                                        vm.open(Screen.Detail(movie.id))
+                                        vm.openItem(movie)
                                     }
                                 }
                                 if (shelf.genre != null) {
@@ -627,10 +632,10 @@ private fun EmptyLibrary(vm: AppModel) {
         if (vm.busy) {
             CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
             Spacer(Modifier.height(14.dp))
-            Text("Loading your movies…", style = TvType.title)
+            Text("Loading your library…", style = TvType.title)
             return
         }
-        Text("No movies yet", style = TvType.headline)
+        Text("Nothing to watch yet", style = TvType.headline)
         Text(
             vm.message.ifBlank { "If the movie drive isn't mounted, plug it in and restart Jellyfin." },
             style = TvType.body,
@@ -643,7 +648,7 @@ private fun EmptyLibrary(vm: AppModel) {
 }
 
 @Composable
-private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: Boolean = false) {
+private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: Boolean = false, noun: String = "movie") {
     val restore = rememberRestore(vm)
     val list = vm.listFor(vm.screen) ?: return
     val items = list.items
@@ -664,7 +669,7 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
                 if (kicker.isNotBlank()) Kicker(kicker)
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(title, style = TvType.headline, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    if (list.loaded) Text("   ${list.total} ${if (list.total == 1) "movie" else "movies"}", style = TvType.body)
+                    if (list.loaded) Text("   ${list.total} ${if (list.total == 1) noun else noun + "s"}", style = TvType.body)
                 }
                 if (tools) {
                     Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -683,11 +688,11 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
             item(span = { GridItemSpan(maxLineSpan) }, key = "empty") {
                 when {
                     list.failed -> Column {
-                        Text("These movies didn't load.", style = TvType.title)
+                        Text("These ${noun}s didn't load.", style = TvType.title)
                         TvButton("Try again", Modifier.padding(top = 12.dp)) { vm.retry(list) }
                     }
                     !list.loaded -> CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
-                    else -> Text(if (vm.libraryEmpty) "No movies are in the library." else "Nothing here.", style = TvType.title)
+                    else -> Text(if (noun == "show") "No TV shows are in the library." else if (vm.libraryEmpty) "No movies are in the library." else "Nothing here.", style = TvType.title)
                 }
             }
         }
@@ -697,13 +702,13 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
             val key = "$screenKey/${movie.id}"
             PosterCard(
                 movie,
-                vm.api.imageUrl(movie.id, "Primary", movie.primaryTag, 360),
+                vm.api.posterUrl(movie),
                 modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
                 width = null,
                 autoFocus = restore == key
             ) {
                 vm.rememberFocus(key)
-                vm.open(Screen.Detail(movie.id))
+                vm.openItem(movie)
             }
         }
     }
@@ -765,9 +770,9 @@ private fun SearchScreen(vm: AppModel) {
                 ) {
                     gridItems(results, key = { it.id }) { movie ->
                         val key = "search/${movie.id}"
-                        PosterCard(movie, vm.api.imageUrl(movie.id, "Primary", movie.primaryTag, 360), width = null, autoFocus = restore == key) {
+                        PosterCard(movie, vm.api.posterUrl(movie), width = null, autoFocus = restore == key) {
                             vm.rememberFocus(key)
-                            vm.open(Screen.Detail(movie.id))
+                            vm.openItem(movie)
                         }
                     }
                 }
@@ -1040,6 +1045,195 @@ private fun DetailBody(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
+@Composable
+private fun SeriesScreen(vm: AppModel, screen: Screen.Series, play: (String, Boolean) -> Unit) {
+    val view = vm.shows[screen.id]
+    if (view == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+        }
+        return
+    }
+    val restore = rememberRestore(vm)
+    val playFocus = remember { FocusRequester() }
+    // Opened from an episode (Continue watching, Next up): land on that episode rather than Play.
+    val landing = screen.episodeId?.takeIf { restore == null }
+    if (landing == null) DefaultFocus(vm, restore, playFocus)
+    val series = view.series
+    val episodes = view.selected?.let { view.episodes[it] }
+    CompositionLocalProvider(LocalBringIntoViewSpec provides MinimalScroll) {
+        LazyColumn(
+            state = vm.listState(screen.key),
+            contentPadding = PaddingValues(top = 72.dp, bottom = 48.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            item(key = "head") {
+                Column(Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth(0.66f)) {
+                        if (series.genres.isNotEmpty()) Kicker(series.genres.take(3).joinToString("  ·  "))
+                        Text(series.name, style = TvType.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            val numbered = view.seasons.count { (it.season ?: 0) > 0 }.takeIf { it > 0 } ?: view.seasons.size
+                            val bits = buildList {
+                                seriesYears(series).takeIf { it.isNotBlank() }?.let { add(it) }
+                                if (numbered > 0) add(if (numbered == 1) "1 season" else "$numbered seasons")
+                                series.communityRating?.let { add("★ %.1f".format(it)) }
+                            }
+                            Text(bits.joinToString("  ·  "), style = TvType.body, color = Cream)
+                            if (series.officialRating.isNotBlank()) Chip(series.officialRating)
+                        }
+                        if (series.overview.isNotBlank()) {
+                            Text(series.overview, style = TvType.body, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+                        }
+                    }
+                    Spacer(Modifier.height(18.dp))
+                    Row(Modifier.focusRestorer().focusGroup(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        view.next?.let { next ->
+                            val resume = next.positionTicks > 0
+                            val which = next.episodeCode.ifBlank { next.name }
+                            TvButton(
+                                if (resume) "Resume $which" else "Play $which",
+                                icon = R.drawable.ic_play,
+                                primary = true,
+                                focusRequester = playFocus
+                            ) { play(next.id, false) }
+                            if (resume) TvButton("From the start", icon = R.drawable.ic_restart) { play(next.id, true) }
+                        }
+                        TvButton(if (series.favorite) "In favorites" else "Favorite", icon = R.drawable.ic_heart, selected = series.favorite) {
+                            vm.toggleFavorite(series)
+                        }
+                    }
+                    if (vm.message.isNotBlank()) Text(vm.message, style = TvType.body, color = Cream, modifier = Modifier.padding(top = 10.dp))
+                }
+            }
+            if (view.seasons.size > 1) {
+                item(key = "seasons") {
+                    LazyRow(
+                        state = vm.listState(screen.key + "/seasons"),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp, horizontal = 2.dp),
+                        modifier = Modifier.focusRestorer().focusGroup()
+                    ) {
+                        items(view.seasons, key = { it.id }) { season ->
+                            // Moving along the seasons shows each one's episodes, like tabs.
+                            TvButton(
+                                season.name.ifBlank { "Season ${season.season ?: ""}" },
+                                selected = season.id == view.selected,
+                                onFocus = { vm.selectSeason(screen.id, season.id) }
+                            ) { vm.selectSeason(screen.id, season.id) }
+                        }
+                    }
+                }
+            }
+            when {
+                episodes == null -> item(key = "loading") {
+                    CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
+                }
+                episodes.isEmpty() -> item(key = "none") {
+                    Text("No episodes in this season yet.", style = TvType.title)
+                }
+                else -> items(episodes, key = { it.id }) { episode ->
+                    val key = "${screen.key}/${episode.id}"
+                    EpisodeRow(vm, episode, autoFocus = restore == key || episode.id == landing) {
+                        vm.rememberFocus(key)
+                        play(episode.id, false)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun seriesYears(series: Movie): String {
+    val start = series.year ?: return ""
+    val end = series.endYear
+    return when {
+        series.status.equals("Continuing", ignoreCase = true) -> "$start – now"
+        end != null && end != start -> "$start – $end"
+        else -> start.toString()
+    }
+}
+
+@Composable
+private fun EpisodeRow(vm: AppModel, episode: Movie, autoFocus: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val requester = remember { FocusRequester() }
+    LaunchedEffect(autoFocus) {
+        if (!autoFocus) return@LaunchedEffect
+        delay(80)
+        runCatching { requester.requestFocus() }
+    }
+    Row(
+        Modifier
+            .fillMaxWidth(0.82f)
+            .focusRequester(requester)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.Transparent)
+            .border(if (focused) 2.dp else 0.5.dp, if (focused) Color.White else Color.Transparent, RoundedCornerShape(14.dp))
+            .clickable(interaction, indication = null, onClick = onClick)
+            .padding(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Box(
+            Modifier
+                .width(200.dp)
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF1B1D24))
+        ) {
+            val still = vm.api.imageUrl(episode.id, "Primary", episode.primaryTag, 420)
+            if (still != null) {
+                AsyncImage(model = still, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            }
+            if (episode.progress > 0.02f) {
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.Black.copy(alpha = 0.5f))
+                ) {
+                    Box(Modifier.fillMaxHeight().fillMaxWidth(episode.progress).background(Color.White))
+                }
+            }
+            if (episode.played) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(5.dp).size(18.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.62f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("✓", style = TvType.small, color = Cream)
+                }
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                listOfNotNull(episode.episode?.let { "$it." }, episode.name).joinToString(" "),
+                style = TvType.title,
+                color = if (focused) Cream else Muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val bits = buildList {
+                runtimeLabel(episode.runtimeTicks).takeIf { it.isNotBlank() }?.let { add(it) }
+                when {
+                    episode.played -> add("Watched")
+                    episode.progress > 0.02f -> add("${runtimeLabel((episode.runtimeTicks - episode.positionTicks).coerceAtLeast(0L))} left")
+                }
+            }
+            if (bits.isNotEmpty()) Text(bits.joinToString("  ·  "), style = TvType.small, modifier = Modifier.padding(top = 2.dp))
+            if (episode.overview.isNotBlank()) {
+                Text(episode.overview, style = TvType.body, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
             }
         }
     }
