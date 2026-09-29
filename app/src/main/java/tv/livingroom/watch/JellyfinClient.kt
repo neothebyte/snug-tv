@@ -34,14 +34,75 @@ class JellyfinClient(
         store.saveSession(json.getString("AccessToken"), user.getString("Id"), user.optString("Name"))
     }
 
-    fun movies(): List<Movie> {
+    /** One page of movies, filtered and sorted by the server. */
+    fun movies(
+        start: Int = 0,
+        limit: Int,
+        sortBy: String = "SortName",
+        sortOrder: String = "Ascending",
+        filters: String? = null,
+        genre: String? = null,
+        person: String? = null,
+        personType: String? = null,
+        personIds: List<String> = emptyList(),
+        search: String? = null,
+        fields: String = GRID_FIELDS,
+        countTotal: Boolean = true
+    ): MoviePage {
         val userId = store.userId ?: error("Sign in again.")
-        val text = call(
-            "GET",
-            "/Users/$userId/Items?IncludeItemTypes=Movie&Recursive=true&SortBy=SortName&SortOrder=Ascending" +
-                "&Fields=Overview,Genres,People,PrimaryImageAspectRatio,BackdropImageTags,DateCreated&Limit=1000"
-        )
-        return parseItems(text)
+        val query = buildString {
+            append("/Users/$userId/Items?IncludeItemTypes=Movie&Recursive=true")
+            append("&SortBy=$sortBy&SortOrder=$sortOrder&StartIndex=$start&Limit=$limit")
+            append("&Fields=$fields&EnableImageTypes=Primary,Backdrop&ImageTypeLimit=1")
+            append("&EnableTotalRecordCount=$countTotal")
+            if (filters != null) append("&Filters=$filters")
+            if (genre != null) append("&Genres=${encode(genre)}")
+            if (person != null) append("&Person=${encode(person)}")
+            if (!personType.isNullOrBlank()) append("&PersonTypes=${encode(personType)}")
+            if (personIds.isNotEmpty()) append("&PersonIds=${personIds.joinToString(",") { encode(it) }}")
+            if (!search.isNullOrBlank()) append("&SearchTerm=${encode(search)}")
+        }
+        val json = JSONObject(call("GET", query))
+        val items = parseItems(json)
+        return MoviePage(items, if (countTotal) json.optInt("TotalRecordCount", items.size) else items.size)
+    }
+
+    fun genres(): List<String> {
+        val userId = store.userId ?: error("Sign in again.")
+        val json = JSONObject(call("GET", "/Genres?UserId=$userId&IncludeItemTypes=Movie&Recursive=true&SortBy=SortName"))
+        val array = json.optJSONArray("Items") ?: JSONArray()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val name = array.optJSONObject(i)?.optString("Name").orEmpty()
+                if (name.isNotBlank()) add(name)
+            }
+        }
+    }
+
+    /** Ids of people whose name matches [search]. */
+    fun findPeople(search: String, limit: Int): List<String> {
+        val userId = store.userId ?: error("Sign in again.")
+        val json = JSONObject(call("GET", "/Persons?UserId=$userId&SearchTerm=${encode(search)}&Limit=$limit"))
+        val array = json.optJSONArray("Items") ?: JSONArray()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val id = array.optJSONObject(i)?.optString("Id").orEmpty()
+                if (id.isNotBlank()) add(id)
+            }
+        }
+    }
+
+    fun similar(id: String, limit: Int): List<Movie> {
+        val userId = store.userId ?: error("Sign in again.")
+        val json = JSONObject(call("GET", "/Items/$id/Similar?UserId=$userId&Limit=$limit&Fields=$GRID_FIELDS"))
+        val array = json.optJSONArray("Items") ?: JSONArray()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                if (item.optString("Type") != "Movie" || item.optString("Id").isBlank()) continue
+                add(parseMovie(item))
+            }
+        }
     }
 
     fun item(id: String): Movie {
@@ -251,8 +312,8 @@ class JellyfinClient(
             .put("SubtitleProfiles", subs)
     }
 
-    private fun parseItems(text: String): List<Movie> {
-        val array = JSONObject(text).optJSONArray("Items") ?: JSONArray()
+    private fun parseItems(json: JSONObject): List<Movie> {
+        val array = json.optJSONArray("Items") ?: JSONArray()
         return buildList {
             for (i in 0 until array.length()) {
                 val item = array.optJSONObject(i) ?: continue
@@ -287,7 +348,12 @@ class JellyfinClient(
 
     private fun base(): String = store.server.trimEnd('/')
 
+    private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
+
     companion object {
+        /** Enough for a poster and the detail backdrop. Cast and plot load when a movie opens. */
+        const val GRID_FIELDS = "BackdropImageTags"
+        const val HOME_FIELDS = "Overview,BackdropImageTags"
         const val OPEN_SUBTITLES = "4b9ed42f518548b598036ff2989014c4"
         private const val MAX_BITRATE = 150_000_000
         private val JSON = "application/json; charset=utf-8".toMediaType()

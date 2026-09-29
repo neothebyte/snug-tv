@@ -8,9 +8,29 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+
+/** A movie grid that the server fills a page at a time as it scrolls. */
+class MovieList(var fetch: (start: Int, limit: Int) -> MoviePage) {
+    var items by mutableStateOf<List<Movie>>(emptyList())
+    var total by mutableStateOf(0)
+    var loaded by mutableStateOf(false)
+    var loading by mutableStateOf(false)
+    var failed by mutableStateOf(false)
+    var generation = 0
+    val complete: Boolean get() = loaded && items.size >= total
+}
 
 class AppModel(app: Application) : AndroidViewModel(app) {
     private val livingRoom = app as LivingRoomApp
@@ -19,7 +39,19 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     var screen by mutableStateOf<Screen>(Screen.Login)
         private set
-    var movies by mutableStateOf<List<Movie>>(emptyList())
+    var home by mutableStateOf<HomeFeed?>(null)
+        private set
+    var libraryEmpty by mutableStateOf(false)
+        private set
+    var genreStats by mutableStateOf<List<GenreStat>?>(null)
+        private set
+    var genresFailed by mutableStateOf(false)
+        private set
+    var searchResults by mutableStateOf<List<Movie>>(emptyList())
+        private set
+    var searching by mutableStateOf(false)
+        private set
+    var similar by mutableStateOf<Map<String, List<Movie>>>(emptyMap())
         private set
     var details by mutableStateOf<Map<String, Movie>>(emptyMap())
         private set
@@ -28,8 +60,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var profilesLoaded by mutableStateOf(false)
         private set
     var query by mutableStateOf("")
+        private set
     var sort by mutableStateOf("title")
+        private set
     var unwatchedOnly by mutableStateOf(false)
+        private set
     var busy by mutableStateOf(false)
     var message by mutableStateOf("")
     var featuredId by mutableStateOf<String?>(null)
@@ -47,6 +82,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private val focusMemory = mutableMapOf<String, String>()
     private val listStates = mutableMapOf<String, LazyListState>()
     private val gridStates = mutableMapOf<String, LazyGridState>()
+    private val lists = mutableMapOf<String, MovieList>()
+    private val seen = mutableMapOf<String, Movie>()
+    private var genreNames: List<String>? = null
+    private var genreLoad: Deferred<List<GenreStat>?>? = null
+    private var homeJob: Job? = null
+    private var searchJob: Job? = null
 
     val canBack: Boolean get() = backStack.isNotEmpty() || (screen != Screen.Home && screen != Screen.Login)
 
@@ -77,34 +118,217 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun focusFor(screenKey: String): String? = focusMemory[screenKey]
 
-    fun movieFor(id: String): Movie? = details[id] ?: movies.find { it.id == id }
+    fun movieFor(id: String): Movie? = details[id] ?: seen[id]
 
-    fun shown(): List<Movie> {
-        var items = movies
-        when (val current = screen) {
-            is Screen.Person -> items = items.filter { movie ->
-                movie.people.any { it.name == current.name && (current.role.isBlank() || it.type == current.role) }
-            }
-            is Screen.Genre -> items = items.filter { current.name in it.genres }
-            Screen.Search -> {
-                val needle = query.trim().lowercase()
-                if (needle.isEmpty()) return emptyList()
-                items = items.filter { it.haystack.contains(needle) }
-                return items.sortedWith(compareByDescending<Movie> { it.name.lowercase().startsWith(needle) }.thenBy { it.sortLabel.lowercase() })
-            }
-            else -> Unit
-        }
-        if (screen == Screen.Movies && unwatchedOnly) items = items.filter { !it.played }
-        return sortMovies(items, if (screen == Screen.Movies) sort else "title")
+    /** The movie shown big on Home: the focused poster, else the first resume or newest movie. */
+    fun featured(): Movie? {
+        val feed = home ?: return null
+        val id = featuredId ?: return feed.hero
+        return feed.shelves.firstNotNullOfOrNull { shelf -> shelf.movies.find { it.id == id } } ?: movieFor(id) ?: feed.hero
     }
 
-    fun moreLike(movie: Movie): List<Movie> {
-        val genres = movie.genres.toSet()
-        if (genres.isEmpty()) return emptyList()
-        return movies
-            .filter { it.id != movie.id && it.genres.any { g -> g in genres } }
-            .sortedByDescending { other -> other.genres.count { it in genres } * 10 + (other.communityRating ?: 0.0) }
-            .take(16)
+    /** The grid behind [screen], created empty on first use. */
+    fun listFor(screen: Screen): MovieList? {
+        lists[screen.key]?.let { return it }
+        val fetch: (Int, Int) -> MoviePage = when (screen) {
+            Screen.Movies -> moviesFetch()
+            is Screen.Genre -> { start, limit -> api.movies(start, limit, genre = screen.name) }
+            is Screen.Person -> { start, limit -> api.movies(start, limit, person = screen.name, personType = screen.role) }
+            else -> return null
+        }
+        return MovieList(fetch).also { lists[screen.key] = it }
+    }
+
+    private fun moviesFetch(): (Int, Int) -> MoviePage {
+        val sortBy = when (sort) {
+            "year" -> "ProductionYear,SortName"
+            "added" -> "DateCreated,SortName"
+            else -> "SortName"
+        }
+        // Only the first key is reversed, so titles within a year still run A to Z.
+        val order = if (sort == "title") "Ascending" else "Descending"
+        val filters = if (unwatchedOnly) "IsUnplayed" else null
+        return { start, limit -> api.movies(start, limit, sortBy = sortBy, sortOrder = order, filters = filters) }
+    }
+
+    fun cycleSort() {
+        sort = when (sort) {
+            "title" -> "added"
+            "added" -> "year"
+            else -> "title"
+        }
+        resetMovies()
+    }
+
+    fun toggleUnwatched() {
+        unwatchedOnly = !unwatchedOnly
+        resetMovies()
+    }
+
+    private fun resetMovies() {
+        val list = lists[Screen.Movies.key] ?: return
+        list.fetch = moviesFetch()
+        reload(list, keepSize = false)
+    }
+
+    fun loadMore(list: MovieList) {
+        if (list.loading || list.complete || list.failed) return
+        val generation = list.generation
+        list.loading = true
+        viewModelScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) { list.fetch(list.items.size, PAGE) }
+                if (generation != list.generation) return@launch
+                keep(page.items)
+                val have = list.items.mapTo(HashSet()) { it.id }
+                list.items = list.items + page.items.filter { it.id !in have }
+                // A short page means the server has nothing more, whatever the count said.
+                list.total = if (page.items.size < PAGE) list.items.size else maxOf(page.total, list.items.size)
+                list.loaded = true
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (error is JellyfinException && error.code == 401) {
+                    signOut()
+                    return@launch
+                }
+                if (generation == list.generation) list.failed = true
+            } finally {
+                if (generation == list.generation) list.loading = false
+            }
+        }
+    }
+
+    fun retry(list: MovieList) {
+        list.failed = false
+        loadMore(list)
+    }
+
+    /** Fetches a list again from the top, keeping what's on screen until the answer arrives. */
+    private fun reload(list: MovieList, keepSize: Boolean) {
+        val generation = ++list.generation
+        val size = if (keepSize) maxOf(list.items.size, PAGE) else PAGE
+        list.loading = true
+        list.failed = false
+        viewModelScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) { list.fetch(0, size) }
+                if (generation != list.generation) return@launch
+                keep(page.items)
+                list.items = page.items.distinctBy { it.id }
+                list.total = if (page.items.size < size) list.items.size else maxOf(page.total, list.items.size)
+                list.loaded = true
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                if (generation == list.generation) list.failed = true
+            } finally {
+                if (generation == list.generation) list.loading = false
+            }
+        }
+    }
+
+    fun type(next: String) {
+        query = next
+        searchJob?.cancel()
+        val needle = next.trim()
+        if (needle.isEmpty()) {
+            searchResults = emptyList()
+            searching = false
+            return
+        }
+        searching = true
+        searchJob = viewModelScope.launch {
+            // Wait for a pause in typing so each key press isn't its own search.
+            delay(300)
+            try {
+                val found = withContext(Dispatchers.IO) { searchMovies(needle) }
+                keep(found)
+                searchResults = found
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                searchResults = emptyList()
+            }
+            searching = false
+        }
+    }
+
+    /** Titles first, then films with a matching person, then films in a matching genre. */
+    private suspend fun searchMovies(needle: String): List<Movie> = coroutineScope {
+        val lower = needle.lowercase()
+        val titles = async { api.movies(limit = 48, search = needle, countTotal = false).items }
+        val byPeople = async {
+            runCatching {
+                val ids = api.findPeople(needle, 3)
+                if (ids.isEmpty()) emptyList() else api.movies(limit = 24, personIds = ids, countTotal = false).items
+            }.getOrDefault(emptyList())
+        }
+        val byGenre = async {
+            runCatching {
+                val names = allGenres().filter { it.lowercase().contains(lower) }.take(2)
+                if (names.isEmpty()) emptyList() else api.movies(limit = 24, genre = names.joinToString("|"), countTotal = false).items
+            }.getOrDefault(emptyList())
+        }
+        val ranked = titles.await().sortedWith(
+            compareByDescending<Movie> { it.name.lowercase().startsWith(lower) }.thenBy { it.sortLabel.lowercase() }
+        )
+        (ranked + byPeople.await() + byGenre.await()).distinctBy { it.id }
+    }
+
+    private fun allGenres(): List<String> = genreNames ?: api.genres().also { genreNames = it }
+
+    fun loadGenres() {
+        viewModelScope.launch { genreStatsOrLoad() }
+    }
+
+    /** Every genre with its movie count and a top-rated backdrop, biggest first. Loaded once per sign-in. */
+    private suspend fun genreStatsOrLoad(): List<GenreStat>? {
+        genreStats?.let { return it }
+        val running = genreLoad?.takeIf { it.isActive } ?: viewModelScope.async {
+            genresFailed = false
+            try {
+                val stats = withContext(Dispatchers.IO) {
+                    val gate = Semaphore(4)
+                    coroutineScope {
+                        allGenres().map { name ->
+                            async {
+                                gate.withPermit {
+                                    runCatching {
+                                        val page = api.movies(limit = 6, sortBy = "CommunityRating,SortName", sortOrder = "Descending", genre = name)
+                                        GenreStat(name, page.total, page.items.firstOrNull { it.backdropTag != null })
+                                    }.getOrNull()
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                }.filterNotNull().filter { it.count > 0 }.sortedByDescending { it.count }
+                genreStats = stats
+                stats
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                genresFailed = true
+                null
+            }
+        }.also { genreLoad = it }
+        return running.await()
+    }
+
+    fun surprise(play: (String, Boolean) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val pick = withContext(Dispatchers.IO) {
+                    api.movies(limit = 1, sortBy = "Random", filters = "IsUnplayed", countTotal = false).items.firstOrNull()
+                        ?: api.movies(limit = 1, sortBy = "Random", countTotal = false).items.firstOrNull()
+                }
+                pick?.let { play(it.id, true) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                message = "Couldn't pick a movie."
+            }
+        }
     }
 
     fun go(root: Screen) {
@@ -121,6 +345,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         focusMemory.remove(next.key)
         listStates.keys.filter { it == next.key || it.startsWith(next.key + "/") }.forEach { listStates.remove(it) }
         gridStates.remove(next.key)
+        lists.remove(next.key)
         restoreKey = null
         screen = next
         if (next is Screen.Detail) loadDetail(next.id)
@@ -137,27 +362,81 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         if (!store.signedIn) return
-        viewModelScope.launch {
-            busy = movies.isEmpty()
+        loadHome()
+        lists.values.forEach { reload(it, keepSize = true) }
+        val open = (backStack.toList() + screen).filterIsInstance<Screen.Detail>().map { it.id }.toSet()
+        details = details.filterKeys { it in open }
+        similar = similar.filterKeys { it in open }
+        open.forEach { loadDetail(it) }
+    }
+
+    /** Each Home row asks the server for just its own posters. */
+    private fun loadHome() {
+        homeJob?.cancel()
+        homeJob = viewModelScope.launch {
+            busy = home == null
             try {
-                movies = withContext(Dispatchers.IO) { api.movies() }
-                val open = (backStack.toList() + screen).filterIsInstance<Screen.Detail>().map { it.id }.toSet()
-                details = details.filterKeys { it in open }.mapValues { (id, old) ->
-                    movies.find { it.id == id }?.let { listed ->
-                        old.copy(played = listed.played, favorite = listed.favorite, positionTicks = listed.positionTicks, lastPlayed = listed.lastPlayed)
-                    } ?: old
+                val fields = JellyfinClient.HOME_FIELDS
+                val rows = withContext(Dispatchers.IO) {
+                    coroutineScope {
+                        val resume = async {
+                            api.movies(limit = 16, sortBy = "DatePlayed", sortOrder = "Descending", filters = "IsResumable", fields = fields, countTotal = false).items
+                        }
+                        val unwatched = async {
+                            api.movies(limit = 30, sortBy = "DateCreated,SortName", sortOrder = "Descending", filters = "IsUnplayed", fields = fields, countTotal = false)
+                                .items.filter { it.positionTicks <= 0L }.take(18)
+                        }
+                        val favorites = async { api.movies(limit = 16, filters = "IsFavorite", fields = fields, countTotal = false).items }
+                        val recent = async { api.movies(limit = 18, sortBy = "DateCreated,SortName", sortOrder = "Descending", fields = fields) }
+                        HomeRows(resume.await(), unwatched.await(), favorites.await(), recent.await())
+                    }
                 }
+                rows.all().forEach { keep(it) }
+                libraryEmpty = rows.recent.total == 0
+                home = rows.feed(home?.shelves.orEmpty().filter { it.genre != null })
                 message = ""
+                busy = false
+                val top = genreStatsOrLoad()?.take(4) ?: return@launch
+                val genreShelves = withContext(Dispatchers.IO) {
+                    coroutineScope {
+                        top.map { genre ->
+                            async { Shelf(genre.name, api.movies(limit = 16, genre = genre.name, fields = fields, countTotal = false).items, genre.name) }
+                        }.awaitAll()
+                    }
+                }.filter { it.movies.isNotEmpty() }
+                genreShelves.forEach { keep(it.movies) }
+                home = rows.feed(genreShelves)
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 if (error is JellyfinException && error.code == 401) {
                     signOut()
                     return@launch
                 }
-                if (movies.isEmpty()) message = "Can't reach Jellyfin at ${store.server}. Check the server in Settings."
+                if (home == null) message = "Can't reach Jellyfin at ${store.server}. Check the server in Settings."
             } finally {
                 busy = false
             }
         }
+    }
+
+    private class HomeRows(val resume: List<Movie>, val unwatched: List<Movie>, val favorites: List<Movie>, val recent: MoviePage) {
+        fun all() = listOf(resume, unwatched, favorites, recent.items)
+
+        fun feed(genres: List<Shelf>): HomeFeed {
+            val shelves = buildList {
+                if (resume.isNotEmpty()) add(Shelf("Continue watching", resume))
+                if (unwatched.isNotEmpty()) add(Shelf("Unwatched", unwatched))
+                if (favorites.isNotEmpty()) add(Shelf("Favorites", favorites))
+                addAll(genres)
+                if (recent.items.isNotEmpty()) add(Shelf("Recently added", recent.items))
+            }
+            return HomeFeed(resume.firstOrNull() ?: recent.items.firstOrNull(), resume.isNotEmpty(), shelves)
+        }
+    }
+
+    private fun keep(movies: List<Movie>) {
+        for (movie in movies) seen[movie.id] = movie
     }
 
     fun loadProfiles() {
@@ -203,7 +482,19 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun signOut() {
         store.clearSession()
-        movies = emptyList()
+        homeJob?.cancel()
+        searchJob?.cancel()
+        genreLoad?.cancel()
+        genreLoad = null
+        home = null
+        libraryEmpty = false
+        genreStats = null
+        genreNames = null
+        searchResults = emptyList()
+        searching = false
+        similar = emptyMap()
+        lists.clear()
+        seen.clear()
         details = emptyMap()
         query = ""
         backStack.clear()
@@ -277,6 +568,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             try {
                 withContext(Dispatchers.IO) { api.toggleFavorite(movie.id, movie.favorite) }
                 patch(movie.id) { it.copy(favorite = !movie.favorite) }
+                loadHome()
             } catch (_: Exception) {
                 message = "That change didn't save."
             }
@@ -290,6 +582,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 patch(movie.id) {
                     it.copy(played = !movie.played, positionTicks = if (!movie.played) 0L else it.positionTicks)
                 }
+                loadHome()
             } catch (_: Exception) {
                 message = "That change didn't save."
             }
@@ -305,10 +598,29 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 if (movieFor(id) == null) message = "That title didn't open."
             }
         }
+        if (id !in similar) {
+            viewModelScope.launch {
+                runCatching { withContext(Dispatchers.IO) { api.similar(id, 16) } }.onSuccess { found ->
+                    keep(found)
+                    similar = similar + (id to found)
+                }
+            }
+        }
     }
 
     private fun patch(id: String, transform: (Movie) -> Movie) {
-        movies = movies.map { if (it.id == id) transform(it) else it }
+        val swap: (List<Movie>) -> List<Movie> = { movies -> movies.map { if (it.id == id) transform(it) else it } }
+        seen[id]?.let { seen[id] = transform(it) }
         details[id]?.let { details = details + (id to transform(it)) }
+        home = home?.let { feed ->
+            feed.copy(hero = feed.hero?.let { if (it.id == id) transform(it) else it }, shelves = feed.shelves.map { it.copy(movies = swap(it.movies)) })
+        }
+        lists.values.forEach { list -> if (list.items.any { it.id == id }) list.items = swap(list.items) }
+        searchResults = swap(searchResults)
+        similar = similar.mapValues { swap(it.value) }
+    }
+
+    companion object {
+        private const val PAGE = 96
     }
 }
