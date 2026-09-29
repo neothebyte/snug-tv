@@ -6,13 +6,23 @@ import java.util.UUID
 class SessionStore(context: Context) {
     private val prefs = context.getSharedPreferences("livingroom-tv", Context.MODE_PRIVATE)
 
+    /** The chosen server's address, or blank before one has been picked. */
     var server: String
         get() {
-            val saved = prefs.getString(KEY_SERVER, DEFAULT_SERVER) ?: DEFAULT_SERVER
-            return if (saved == OLD_DEFAULT_SERVER) DEFAULT_SERVER else saved
+            val saved = prefs.getString(KEY_SERVER, null)
+            if (saved != null) return saved
+            // Older versions assumed this address until another was typed. Keep TVs that are already
+            // signed in that way working; everyone else picks a server on first launch.
+            return if (prefs.contains(KEY_TOKEN)) LEGACY_SERVER else ""
         }
         set(value) {
             prefs.edit().putString(KEY_SERVER, value.trim().trimEnd('/')).apply()
+        }
+
+    var serverName: String
+        get() = prefs.getString(KEY_SERVER_NAME, "") ?: ""
+        set(value) {
+            prefs.edit().putString(KEY_SERVER_NAME, value).apply()
         }
 
     var token: String?
@@ -92,9 +102,9 @@ class SessionStore(context: Context) {
     }
 
     companion object {
-        const val DEFAULT_SERVER = "http://192.168.1.42:8096"
-        private const val OLD_DEFAULT_SERVER = "http://192.168.1.53:8096"
+        private const val LEGACY_SERVER = "http://192.168.1.42:8096"
         private const val KEY_SERVER = "server"
+        private const val KEY_SERVER_NAME = "serverName"
         private const val KEY_TOKEN = "token"
         private const val KEY_USER_ID = "userId"
         private const val KEY_USER_NAME = "userName"

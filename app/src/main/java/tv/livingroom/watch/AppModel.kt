@@ -32,6 +32,18 @@ class MovieList(var fetch: (start: Int, limit: Int) -> MoviePage) {
     val complete: Boolean get() = loaded && items.size >= total
 }
 
+enum class LoginStep { Server, Profiles }
+
+/** Where a Quick Connect sign-in has got to. */
+sealed interface QuickState {
+    data object Closed : QuickState
+    data object Starting : QuickState
+    data class Waiting(val code: String) : QuickState
+    /** The server has Quick Connect switched off. */
+    data object Off : QuickState
+    data class Failed(val note: String) : QuickState
+}
+
 class AppModel(app: Application) : AndroidViewModel(app) {
     private val livingRoom = app as LivingRoomApp
     val store: SessionStore get() = livingRoom.store
@@ -49,7 +61,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         private set
     var searchResults by mutableStateOf<List<Movie>>(emptyList())
         private set
-    var searching by mutableStateOf(false)
+    var searchPending by mutableStateOf(false)
         private set
     var similar by mutableStateOf<Map<String, List<Movie>>>(emptyMap())
         private set
@@ -59,6 +71,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         private set
     var profilesLoaded by mutableStateOf(false)
         private set
+    var loginStep by mutableStateOf(if (store.server.isBlank()) LoginStep.Server else LoginStep.Profiles)
+        private set
+    var servers by mutableStateOf<List<FoundServer>>(emptyList())
+        private set
+    var searching by mutableStateOf(false)
+        private set
+    var searched by mutableStateOf(false)
+        private set
+    var quick by mutableStateOf<QuickState>(QuickState.Closed)
+        private set
+    private var quickJob: Job? = null
     var query by mutableStateOf("")
         private set
     var sort by mutableStateOf("title")
@@ -93,11 +116,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     val canBack: Boolean get() = backStack.isNotEmpty() || (screen != Screen.Home && screen != Screen.Login)
 
     init {
-        if (store.signedIn) {
-            screen = Screen.Home
-            refresh()
-        } else {
-            loadProfiles()
+        when {
+            store.signedIn -> {
+                screen = Screen.Home
+                refresh()
+            }
+            loginStep == LoginStep.Server -> findServers()
+            else -> loadProfiles()
         }
     }
 
@@ -235,10 +260,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val needle = next.trim()
         if (needle.isEmpty()) {
             searchResults = emptyList()
-            searching = false
+            searchPending = false
             return
         }
-        searching = true
+        searchPending = true
         searchJob = viewModelScope.launch {
             // Wait for a pause in typing so each key press isn't its own search.
             delay(300)
@@ -251,7 +276,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             } catch (_: Exception) {
                 searchResults = emptyList()
             }
-            searching = false
+            searchPending = false
         }
     }
 
@@ -466,10 +491,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             message = ""
             try {
                 withContext(Dispatchers.IO) { api.authenticate(username.trim(), password) }
-                backStack.clear()
                 busy = false
-                screen = Screen.Home
-                refresh()
+                enterHome()
             } catch (error: Exception) {
                 busy = false
                 message = if (error is JellyfinException && error.code == 401) {
@@ -481,7 +504,129 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun enterHome() {
+        backStack.clear()
+        screen = Screen.Home
+        refresh()
+    }
+
+    /** Looks for Jellyfin servers on the home network. */
+    fun findServers() {
+        if (searching) return
+        viewModelScope.launch {
+            searching = true
+            message = ""
+            servers = try {
+                withContext(Dispatchers.IO) { ServerDiscovery.find(getApplication()) }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            searching = false
+            searched = true
+        }
+    }
+
+    fun chooseServer(server: FoundServer) = connect(listOf(server.address))
+
+    /** Tries what the user typed, filling in http:// and Jellyfin's usual port when they're left out. */
+    fun connectTo(typed: String) {
+        val candidates = ServerDiscovery.candidates(typed)
+        if (candidates.isEmpty()) {
+            message = "Enter the server's address."
+            return
+        }
+        connect(candidates, typed.trim())
+    }
+
+    private fun connect(candidates: List<String>, shown: String = candidates.first()) {
+        if (busy) return
+        viewModelScope.launch {
+            busy = true
+            message = ""
+            val found = withContext(Dispatchers.IO) { candidates.firstNotNullOfOrNull { api.serverInfo(it) } }
+            busy = false
+            if (found == null) {
+                message = "No Jellyfin server answered at $shown. Check the address and that the server is on."
+                return@launch
+            }
+            store.clearSession()
+            store.server = found.address
+            store.serverName = found.name
+            profiles = emptyList()
+            profilesLoaded = false
+            loginStep = LoginStep.Profiles
+            loadProfiles()
+        }
+    }
+
+    /** Signs out and goes back to picking a server. */
+    fun changeServer() {
+        clearSignedIn()
+        message = ""
+        loginStep = LoginStep.Server
+        findServers()
+    }
+
+    /** Leaves the server picker without changing anything, when a server is already chosen. */
+    fun keepServer(): Boolean {
+        if (store.server.isBlank()) return false
+        message = ""
+        loginStep = LoginStep.Profiles
+        if (!profilesLoaded) loadProfiles()
+        return true
+    }
+
+    fun startQuickConnect() {
+        quickJob?.cancel()
+        quick = QuickState.Starting
+        quickJob = viewModelScope.launch {
+            try {
+                if (!withContext(Dispatchers.IO) { api.quickConnectEnabled() }) {
+                    quick = QuickState.Off
+                    return@launch
+                }
+                val request = withContext(Dispatchers.IO) { api.quickConnectStart() }
+                quick = QuickState.Waiting(request.code)
+                // The server forgets a request after about ten minutes; checking then fails and says so below.
+                while (!withContext(Dispatchers.IO) { api.quickConnectApproved(request.secret) }) {
+                    delay(QUICK_POLL_MS)
+                }
+                withContext(Dispatchers.IO) { api.authenticateQuickConnect(request.secret) }
+                quick = QuickState.Closed
+                enterHome()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                quick = QuickState.Failed(
+                    if (error is JellyfinException && (error.code == 404 || error.code == 401)) {
+                        "That code has expired."
+                    } else {
+                        "Couldn't reach the server."
+                    }
+                )
+            }
+        }
+    }
+
+    fun closeQuickConnect() {
+        quickJob?.cancel()
+        quickJob = null
+        quick = QuickState.Closed
+    }
+
     fun signOut() {
+        clearSignedIn()
+        if (store.server.isBlank()) {
+            loginStep = LoginStep.Server
+            findServers()
+        } else {
+            loginStep = LoginStep.Profiles
+            loadProfiles()
+        }
+    }
+
+    private fun clearSignedIn() {
+        closeQuickConnect()
         store.clearSession()
         homeJob?.cancel()
         searchJob?.cancel()
@@ -492,7 +637,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         genreStats = null
         genreNames = null
         searchResults = emptyList()
-        searching = false
+        searchPending = false
         similar = emptyMap()
         lists.clear()
         seen.clear()
@@ -503,15 +648,6 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         listStates.clear()
         gridStates.clear()
         screen = Screen.Login
-        loadProfiles()
-    }
-
-    fun saveServer(url: String) {
-        var next = url.trim().trimEnd('/').ifBlank { SessionStore.DEFAULT_SERVER }
-        if (!next.startsWith("http://") && !next.startsWith("https://")) next = "http://$next"
-        if (!Regex(":\\d+$").containsMatchIn(next.substringAfter("://"))) next = "$next:8096"
-        store.server = next
-        signOut()
     }
 
     fun setControls(seconds: Int) {
@@ -628,5 +764,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val PAGE = 96
+    }
+
+    companion object {
+        private const val QUICK_POLL_MS = 3_000L
     }
 }
