@@ -902,7 +902,7 @@ private fun SettingsScreen(vm: AppModel) {
             }
         }
         item {
-            SettingRow("Match frame rate", if (vm.matchFrameRate) "On" else "Off") { vm.setMatchFrameRate(!vm.matchFrameRate) }
+            SettingRow("Match frame rate", if (vm.matchFrameRate) "On" else "Off") { vm.setFrameRateMatching(!vm.matchFrameRate) }
         }
         item {
             val current = cueNames.minByOrNull { kotlin.math.abs(it.first - vm.cueScale) }?.second ?: "Medium"

@@ -243,7 +243,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         store.autoSubtitles = on
     }
 
-    fun setMatchFrameRate(on: Boolean) {
+    fun setFrameRateMatching(on: Boolean) {
         matchFrameRate = on
         store.matchFrameRate = on
     }
