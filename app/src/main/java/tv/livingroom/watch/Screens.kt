@@ -1321,7 +1321,7 @@ private fun SettingsScreen(vm: AppModel) {
         item { Kicker("Account", Modifier.padding(top = 10.dp)) }
         item { SettingRow("Server", vm.store.serverName.ifBlank { vm.store.server.substringAfter("://") }) { askServer = true } }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Living Room TV 1.7 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Snug 1.8.1 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(

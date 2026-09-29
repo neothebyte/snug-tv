@@ -417,7 +417,7 @@ class JellyfinClient(
             }
         }
         return JSONObject()
-            .put("Name", "Living Room TV")
+            .put("Name", "Snug TV")
             .put("MaxStreamingBitrate", MAX_BITRATE)
             .put("MaxStaticBitrate", MAX_BITRATE)
             .put("DirectPlayProfiles", direct)
@@ -489,7 +489,7 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.7.0\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.8.1\"$token"
     }
 
     /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */
