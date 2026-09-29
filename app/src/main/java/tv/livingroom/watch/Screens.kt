@@ -48,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -76,6 +77,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 private val ContentStart = 20.dp + RailCollapsed + 24.dp
 
@@ -650,12 +652,19 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
     val list = vm.listFor(vm.screen) ?: return
     val items = list.items
     LaunchedEffect(list) { if (!list.loaded) vm.loadMore(list) }
+    val gridState = vm.gridState(vm.screen.key)
+    // One watcher for the whole grid: ask for the next page while the last eight rows are still off screen.
+    LaunchedEffect(list, gridState) {
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .distinctUntilChanged()
+            .collect { last -> if (last >= list.items.size - 48) vm.loadMore(list) }
+    }
     val first = remember { FocusRequester() }
     DefaultFocus(vm, restore, first, ready = items.isNotEmpty())
     val screenKey = vm.screen.key
     LazyVerticalGrid(
         columns = GridCells.Fixed(6),
-        state = vm.gridState(screenKey),
+        state = gridState,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         contentPadding = PaddingValues(top = SafeY, bottom = 48.dp, start = 2.dp, end = 2.dp),
@@ -694,8 +703,6 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
             }
         }
         gridItemsIndexed(items, key = { _, movie -> movie.id }) { index, movie ->
-            // Ask for the next page while the last few rows are still off screen.
-            if (index >= items.size - 48) LaunchedEffect(items.size) { vm.loadMore(list) }
             val key = "$screenKey/${movie.id}"
             PosterCard(
                 movie,
