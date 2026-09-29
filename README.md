@@ -7,7 +7,8 @@ Living Room installs beside the official Jellyfin app: its package is `tv.living
 ## Features
 
 **Browsing**
-- Profile picker, with password entry only for profiles that need one. The server address can be changed on the sign-in screen.
+- Finds Jellyfin servers on the home network by itself, or takes a typed address (`http://` and `:8096` are filled in when left out).
+- Profile picker, with password entry only for profiles that need one, plus Quick Connect: the TV shows a code you approve from the Jellyfin app on your phone.
 - Home with a featured title and shelves: Continue watching, Recently added, and one per genre.
 - Full movie grid, genre tiles, and search with an on-screen keyboard.
 - Title page with resume and start-over, favourite and watched toggles, format badges, and subtitle and audio pickers.
@@ -44,7 +45,7 @@ adb connect <tv-address>:5555
 adb install -r LivingRoomTV.apk
 ```
 
-On the television, open **Living Room**, confirm the server address (for example `http://192.168.1.10:8096`), and choose a profile.
+On the television, open **Living Room**, pick your server (or enter its address, for example `192.168.1.10`), and choose a profile or use Quick Connect.
 
 Requirements: Android TV or Google TV on Android 7.0 (API 24) or newer, and a Jellyfin 10.10+ server on the local network. The app uses plain HTTP, which is intended for a home LAN.
 
@@ -74,6 +75,7 @@ app/src/main/java/tv/livingroom/watch/
   DeviceCodecs.kt      Decoder probing and Jellyfin device profile
   JellyfinClient.kt    Jellyfin REST client (OkHttp)
   AppModel.kt          State and actions
+  ServerDiscovery.kt   Finding servers on the network
   SessionStore.kt      Saved server and session
   Models.kt, Theme.kt
 ```
