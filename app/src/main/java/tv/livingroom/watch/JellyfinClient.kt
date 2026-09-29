@@ -16,6 +16,9 @@ class JellyfinClient(
     private val http: OkHttpClient,
     private val codecs: () -> DeviceCodecs
 ) {
+    @Volatile private var serverVersion: String? = null
+    @Volatile private var versionFor: String? = null
+
     fun publicUsers(): List<Profile> {
         val text = call("GET", "/Users/Public", auth = false)
         val array = JSONArray(text.ifBlank { "[]" })
@@ -103,20 +106,24 @@ class JellyfinClient(
         audioIndex: Int?,
         subtitleIndex: Int?,
         burn: Boolean,
-        forceTranscode: Boolean
+        mode: PlayMode
     ): PlaybackPlan {
         val userId = store.userId ?: error("Sign in again.")
+        val effective = if (burn) PlayMode.Transcode else mode
+        val directAllowed = effective == PlayMode.Direct
+        val copyVideo = effective != PlayMode.Transcode
+        val copyAudio = effective == PlayMode.Direct || effective == PlayMode.Remux
         val body = JSONObject()
             .put("UserId", userId)
             .put("MaxStreamingBitrate", MAX_BITRATE)
             .put("StartTimeTicks", startTicks)
-            .put("DeviceProfile", deviceProfile(burn, forceTranscode))
+            .put("DeviceProfile", deviceProfile(burn, copyVideo, copyAudio))
             .put("AutoOpenLiveStream", true)
-            .put("EnableDirectPlay", !forceTranscode && !burn)
-            .put("EnableDirectStream", !forceTranscode && !burn)
+            .put("EnableDirectPlay", directAllowed)
+            .put("EnableDirectStream", directAllowed)
             .put("EnableTranscoding", true)
-            .put("AllowVideoStreamCopy", !forceTranscode && !burn)
-            .put("AllowAudioStreamCopy", !forceTranscode)
+            .put("AllowVideoStreamCopy", copyVideo)
+            .put("AllowAudioStreamCopy", copyAudio)
         if (audioIndex != null) body.put("AudioStreamIndex", audioIndex)
         if (subtitleIndex != null) body.put("SubtitleStreamIndex", subtitleIndex)
         val json = JSONObject(call("POST", "/Items/$itemId/PlaybackInfo", body))
@@ -124,9 +131,9 @@ class JellyfinClient(
         if (errorCode.isNotBlank()) throw JellyfinException(500, "PlaybackInfo $errorCode")
         val sourceJson = json.optJSONArray("MediaSources")?.optJSONObject(0) ?: throw JellyfinException(404, "No media source")
         val source = parseSource(sourceJson)
-        val direct = !forceTranscode && !burn && (source.directPlay || source.directStream)
+        val direct = directAllowed && (source.directPlay || source.directStream)
         if (!direct && source.transcodingUrl.isNullOrBlank()) throw JellyfinException(404, "No media source")
-        return PlaybackPlan(json.optString("PlaySessionId"), source, hls = !direct, burn = burn)
+        return PlaybackPlan(json.optString("PlaySessionId"), source, hls = !direct, burn = burn, mode = effective)
     }
 
     fun streamUrl(itemId: String, plan: PlaybackPlan): String {
@@ -134,14 +141,23 @@ class JellyfinClient(
         if (plan.hls) {
             val path = plan.source.transcodingUrl ?: throw JellyfinException(404, "No media source")
             val join = if (path.contains("?")) "&" else "?"
-            val reencode = plan.burn || Regex("TranscodeReasons=[^&]*Video", RegexOption.IGNORE_CASE).containsMatchIn(path)
-            val cap = if (reencode && !path.contains("MaxWidth=", ignoreCase = true)) "&MaxWidth=1920&MaxHeight=1080" else ""
-            return base() + path + join + "api_key=" + key + cap
+            val reencode = plan.burn || plan.mode == PlayMode.Transcode ||
+                Regex("TranscodeReasons=[^&]*Video", RegexOption.IGNORE_CASE).containsMatchIn(path)
+            if (!reencode) return base() + path + join + "api_key=" + key
+            // The Pi can't re-encode above 1080p in real time, even when the TV could show 4K.
+            val width = minOf(sizeParam(path, "MaxWidth") ?: 1920, 1920)
+            val height = minOf(sizeParam(path, "MaxHeight") ?: 1080, 1080)
+            val trimmed = path.replace(Regex("(?<=[?&])Max(Width|Height)=\\d+&?", RegexOption.IGNORE_CASE), "").trimEnd('&')
+            val trimmedJoin = if (trimmed.contains("?")) "&" else "?"
+            return base() + trimmed + trimmedJoin + "api_key=" + key + "&MaxWidth=$width&MaxHeight=$height"
         }
         val sourceId = URLEncoder.encode(plan.source.id, "UTF-8")
         val session = URLEncoder.encode(plan.playSessionId, "UTF-8")
         return "${base()}/Videos/$itemId/stream?Static=true&MediaSourceId=$sourceId&PlaySessionId=$session&api_key=$key"
     }
+
+    private fun sizeParam(path: String, name: String): Int? =
+        Regex("[?&]$name=(\\d+)", RegexOption.IGNORE_CASE).find(path)?.groupValues?.get(1)?.toIntOrNull()
 
     fun subtitleVtt(itemId: String, sourceId: String, index: Int): String {
         val text = call("GET", "/Videos/$itemId/$sourceId/Subtitles/$index/Stream.vtt")
@@ -216,7 +232,7 @@ class JellyfinClient(
         call("POST", "/Plugins/$OPEN_SUBTITLES/Configuration", current)
     }
 
-    private fun deviceProfile(burn: Boolean, forceTranscode: Boolean): JSONObject {
+    private fun deviceProfile(burn: Boolean, copyVideo: Boolean, copyAudio: Boolean): JSONObject {
         val device = codecs()
         val video = device.video.joinToString(",")
         val audio = device.audio.joinToString(",")
@@ -227,15 +243,15 @@ class JellyfinClient(
                 .put("VideoCodec", video)
                 .put("AudioCodec", audio)
         )
-        val copyableAudio = if (forceTranscode) {
-            "aac"
-        } else {
+        val copyableAudio = if (copyAudio) {
             device.audio.filter { it in setOf("aac", "mp3", "ac3", "eac3", "flac", "opus") }.joinToString(",")
-        }
-        val copyableVideo = if (forceTranscode || burn) {
-            "h264"
         } else {
+            "aac"
+        }
+        val copyableVideo = if (copyVideo && !burn) {
             device.video.filter { it in setOf("hevc", "h264", "av1", "vp9") }.joinToString(",")
+        } else {
+            "h264"
         }
         val transcode = JSONArray().put(
             JSONObject()
@@ -250,22 +266,30 @@ class JellyfinClient(
                 .put("BreakOnNonKeyFrames", false)
         )
         val codecProfiles = JSONArray()
-        if (!device.hevcMain10) {
-            codecProfiles.put(
-                JSONObject()
-                    .put("Type", "Video")
-                    .put("Codec", "hevc")
-                    .put(
-                        "Conditions",
-                        JSONArray().put(
-                            JSONObject()
-                                .put("Condition", "LessThanEqual")
-                                .put("Property", "VideoBitDepth")
-                                .put("Value", "8")
-                                .put("IsRequired", false)
-                        )
-                    )
-            )
+        for (codec in device.video) {
+            val conditions = JSONArray()
+            // Don't hand the TV a picture bigger than its decoder can handle smoothly.
+            device.limits[codec]?.let { limit ->
+                conditions.put(condition("LessThanEqual", "Width", limit.width.toString()))
+                conditions.put(condition("LessThanEqual", "Height", limit.height.toString()))
+            }
+            // 10-bit H.264 (Hi10P) has no hardware decoder on TVs; 10-bit HEVC only where the decoder says so.
+            if (codec == "h264" || (codec == "hevc" && !device.hevcMain10)) {
+                conditions.put(condition("LessThanEqual", "VideoBitDepth", "8"))
+            }
+            // Dolby Vision without an HDR10 or SDR fallback layer (profile 5) shows purple and green
+            // on TVs without a Dolby Vision decoder. Every other kind of HDR plays fine.
+            if (!device.dolbyVision && (codec == "hevc" || codec == "av1") && serverTellsDolbyVisionLayers()) {
+                conditions.put(condition("EqualsAny", "VideoRangeType", PLAYABLE_WITHOUT_DOLBY_VISION))
+            }
+            if (conditions.length() > 0) {
+                codecProfiles.put(
+                    JSONObject()
+                        .put("Type", "Video")
+                        .put("Codec", codec)
+                        .put("Conditions", conditions)
+                )
+            }
         }
         val subs = JSONArray()
         listOf("srt", "subrip", "vtt", "webvtt", "ass", "ssa").forEach {
@@ -288,6 +312,31 @@ class JellyfinClient(
             .put("CodecProfiles", codecProfiles)
             .put("SubtitleProfiles", subs)
     }
+
+    /**
+     * Jellyfin 10.9 started telling Dolby Vision files with an HDR10 fallback apart from those without.
+     * Older servers call both "DOVI", so filtering there would re-encode every Dolby Vision film.
+     */
+    private fun serverTellsDolbyVisionLayers(): Boolean {
+        val server = base()
+        if (versionFor != server) {
+            serverVersion = runCatching {
+                JSONObject(call("GET", "/System/Info/Public", auth = false)).optString("Version")
+            }.getOrNull()
+            versionFor = server
+        }
+        val parts = serverVersion.orEmpty().split(".").mapNotNull { it.toIntOrNull() }
+        val major = parts.getOrNull(0) ?: return false
+        val minor = parts.getOrNull(1) ?: 0
+        return major > 10 || (major == 10 && minor >= 9)
+    }
+
+    private fun condition(kind: String, property: String, value: String): JSONObject =
+        JSONObject()
+            .put("Condition", kind)
+            .put("Property", property)
+            .put("Value", value)
+            .put("IsRequired", false)
 
     private fun parseItems(text: String): List<Movie> {
         val array = JSONObject(text).optJSONArray("Items") ?: JSONArray()
@@ -327,7 +376,7 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.1.0\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.3.0\"$token"
     }
 
     /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */
@@ -340,6 +389,8 @@ class JellyfinClient(
     companion object {
         const val OPEN_SUBTITLES = "4b9ed42f518548b598036ff2989014c4"
         private const val MAX_BITRATE = 150_000_000
+        private const val PLAYABLE_WITHOUT_DOLBY_VISION =
+            "SDR|HDR10|HDR10Plus|HLG|DOVIWithSDR|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithHLG"
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }

@@ -76,7 +76,9 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -106,8 +108,10 @@ class PlayerActivity : ComponentActivity() {
     private var subsChosen = false
     private var sentStart = false
     private var reportedStop = false
-    private var retriedTranscode = false
-    private var forcedTranscode = false
+    /** The least server work this title has played with; a failure only ever moves it down the list. */
+    private var floor = PlayMode.Direct
+    private var retriedNetwork = false
+    private var displaySwitched = false
     private var libraryEmpty = false
     private var pendingTextTrack: MediaStreamInfo? = null
     private var pendingAudioTrack: MediaStreamInfo? = null
@@ -165,7 +169,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun buildPlayer(): ExoPlayer {
         val dataSource = DefaultHttpDataSource.Factory()
-            .setUserAgent("LivingRoomTV/1.1")
+            .setUserAgent("LivingRoomTV/1.3")
             .setDefaultRequestProperties(mapOf("X-Emby-Token" to store.token.orEmpty()))
             .setConnectTimeoutMs(20_000)
             .setReadTimeoutMs(60_000)
@@ -179,12 +183,16 @@ class PlayerActivity : ComponentActivity() {
         return ExoPlayer.Builder(this, renderers)
             .setTrackSelector(selector)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+            .setLoadControl(loadControl())
+            // Holds a Wi-Fi lock while playing so the box doesn't drop into Wi-Fi power saving mid-film.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
             .also { player ->
                 player.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
                         loading = state == Player.STATE_BUFFERING || state == Player.STATE_IDLE && error == null && plan == null
                         if (state == Player.STATE_READY) {
+                            retriedNetwork = false
                             loading = false
                             loadingNote = ""
                             durationMs = player.duration.takeIf { it > 0 } ?: durationMs
@@ -206,13 +214,22 @@ class PlayerActivity : ComponentActivity() {
                     }
 
                     override fun onPlayerError(failure: PlaybackException) {
-                        if (!retriedTranscode && plan != null && !forcedTranscode) {
-                            retriedTranscode = true
-                            loadingNote = "Converting for this TV…"
-                            prepare(currentTicks(), forceTranscode = true)
-                        } else {
-                            showError(failure)
+                        val current = plan
+                        if (current != null && isNetworkError(failure) && !retriedNetwork) {
+                            // A Wi-Fi blip: try the same stream again before changing anything.
+                            retriedNetwork = true
+                            loadingNote = "Reconnecting…"
+                            prepare(currentTicks(), current.mode)
+                            return
                         }
+                        val next = current?.let { fallbackAfter(failure, it) }
+                        if (next == null) {
+                            showError(failure)
+                            return
+                        }
+                        floor = next
+                        loadingNote = if (next == PlayMode.Transcode) "Converting for this TV…" else "Repackaging for this TV…"
+                        prepare(currentTicks(), next)
                     }
                 })
             }
@@ -258,14 +275,14 @@ class PlayerActivity : ComponentActivity() {
                     }
                     loadingNote = ""
                 }
-                prepare(if (fromStart) 0L else loaded.positionTicks, forceTranscode = false)
+                prepare(if (fromStart) 0L else loaded.positionTicks)
             } catch (failure: Exception) {
                 showError(failure)
             }
         }
     }
 
-    private fun prepare(atTicks: Long, forceTranscode: Boolean) {
+    private fun prepare(atTicks: Long, mode: PlayMode = floor) {
         val current = movie ?: return
         prepareJob?.cancel()
         prepareJob = lifecycleScope.launch {
@@ -277,14 +294,14 @@ class PlayerActivity : ComponentActivity() {
                 val bitmap = chosen != null && !chosen.isTextSubtitle()
                 var next = withContext(Dispatchers.IO) {
                     previous?.let { api.stopEncoding(it.playSessionId) }
-                    api.playback(current.id, atTicks, audioIndex, chosen?.takeIf { !bitmap }?.index, burn = false, forceTranscode = forceTranscode)
+                    api.playback(current.id, atTicks, audioIndex, chosen?.takeIf { !bitmap }?.index, burn = false, mode = mode)
                 }
                 if (bitmap && next.hls) {
                     if (subsChosen) {
                         loadingNote = "Adding subtitles to the picture…"
                         next = withContext(Dispatchers.IO) {
                             api.stopEncoding(next.playSessionId)
-                            api.playback(current.id, atTicks, audioIndex, chosen!!.index, burn = true, forceTranscode = true)
+                            api.playback(current.id, atTicks, audioIndex, chosen!!.index, burn = true, mode = PlayMode.Transcode)
                         }
                     } else {
                         subtitleIndex = null
@@ -292,7 +309,6 @@ class PlayerActivity : ComponentActivity() {
                 }
                 if (previous != null && previous.playSessionId != next.playSessionId) reportStopFor(previous)
                 plan = next
-                forcedTranscode = forceTranscode || next.burn
                 sentStart = false
                 reportedStop = false
                 val streams = next.source.streams.ifEmpty { current.streams }
@@ -300,6 +316,13 @@ class PlayerActivity : ComponentActivity() {
                 subStreams = streams.filter { it.type == "Subtitle" }
                 selectedAudio = audioIndex ?: next.source.defaultAudioIndex ?: audioStreams.firstOrNull { it.isDefault }?.index
                 selectedSub = subtitleIndex
+                if (!displaySwitched) {
+                    displaySwitched = true
+                    val fps = streams.firstOrNull { it.type == "Video" }?.frameRate?.takeIf { it > 0f }
+                        ?: current.streams.firstOrNull { it.type == "Video" }?.frameRate
+                        ?: 0f
+                    if (store.matchFrameRate && fps > 0f) DisplayRate.match(this@PlayerActivity, fps)
+                }
                 val player = exo ?: return@launch
                 pendingTextTrack = if (bitmap && !next.hls) chosen else null
                 pendingAudioTrack = if (!next.hls) audioStreams.find { it.index == audioIndex } else null
@@ -392,6 +415,42 @@ class PlayerActivity : ComponentActivity() {
         } ?: groups.getOrNull(order)
     }
 
+    private fun isNetworkError(failure: PlaybackException): Boolean =
+        failure.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            failure.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+
+    /**
+     * Picks the next, heavier way to play after a failure, or null when there is nothing left to try.
+     * Only a picture the TV can't decode justifies re-encoding; container and sound problems are fixed
+     * by repackaging, which costs the Pi almost nothing.
+     */
+    private fun fallbackAfter(failure: PlaybackException, current: PlaybackPlan): PlayMode? {
+        if (current.burn || current.mode == PlayMode.Transcode) return null
+        val mime = (failure as? ExoPlaybackException)
+            ?.takeIf { it.type == ExoPlaybackException.TYPE_RENDERER }
+            ?.rendererFormat?.sampleMimeType
+        // 5xxx codes are the audio output refusing the sound format (for example DTS the TV can't take).
+        val audioOutputFailed = failure.errorCode / 1000 == 5
+        val wanted = when {
+            mime != null && MimeTypes.isVideo(mime) -> PlayMode.Transcode
+            audioOutputFailed || (mime != null && MimeTypes.isAudio(mime)) -> PlayMode.RemuxAudio
+            current.mode == PlayMode.Direct -> PlayMode.Remux
+            else -> PlayMode.Transcode
+        }
+        return if (wanted.ordinal > current.mode.ordinal) wanted else PlayMode.Transcode
+    }
+
+    private fun loadControl(): DefaultLoadControl {
+        // Buffer further ahead so a Wi-Fi dip doesn't stall a high-bitrate file. The buffer lives in
+        // the app's memory, so its size follows how much memory this TV gives the app.
+        val budget = (Runtime.getRuntime().maxMemory() / 2).coerceIn(64L * MB, 200L * MB).toInt()
+        return DefaultLoadControl.Builder()
+            .setBufferDurationsMs(50_000, 120_000, 2_500, 5_000)
+            .setTargetBufferBytes(budget)
+            .setPrioritizeTimeOverSizeThresholds(false)
+            .build()
+    }
+
     private fun currentTicks(): Long {
         val player = exo ?: return 0L
         return player.currentPosition.coerceAtLeast(0L) * 10_000L
@@ -439,12 +498,13 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun retry() {
-        retriedTranscode = false
+        floor = PlayMode.Direct
+        retriedNetwork = false
         error = null
         if (movie == null) {
             start(intent.getStringExtra(EXTRA_ID).orEmpty(), false)
         } else {
-            prepare(currentTicks().takeIf { it > 0 } ?: (movie?.positionTicks ?: 0L), forceTranscode = false)
+            prepare(currentTicks().takeIf { it > 0 } ?: (movie?.positionTicks ?: 0L))
         }
     }
 
@@ -587,13 +647,13 @@ class PlayerActivity : ComponentActivity() {
             stream == null -> {
                 loadCues(current.id, currentPlan, null)
                 setTextTrackEnabled(false)
-                if (currentPlan.burn) prepare(currentTicks(), forceTranscode = false)
+                if (currentPlan.burn) prepare(currentTicks())
                 else report()
             }
             stream.isTextSubtitle() -> {
                 setTextTrackEnabled(false)
                 if (currentPlan.burn) {
-                    prepare(currentTicks(), forceTranscode = false)
+                    prepare(currentTicks())
                 } else {
                     loadCues(current.id, currentPlan, stream)
                     report()
@@ -605,7 +665,7 @@ class PlayerActivity : ComponentActivity() {
                 exo?.currentTracks?.let { applyPendingTracks(it) }
                 report()
             }
-            else -> prepare(currentTicks(), forceTranscode = false)
+            else -> prepare(currentTicks())
         }
     }
 
@@ -620,8 +680,7 @@ class PlayerActivity : ComponentActivity() {
             exo?.currentTracks?.let { applyPendingTracks(it) }
             report()
         } else {
-            retriedTranscode = false
-            prepare(currentTicks(), forceTranscode = currentPlan.burn)
+            prepare(currentTicks())
         }
     }
 
@@ -662,8 +721,7 @@ class PlayerActivity : ComponentActivity() {
                 selectedSub = added
                 panel = null
                 showControls()
-                retriedTranscode = false
-                prepare(currentTicks(), forceTranscode = false)
+                prepare(currentTicks())
             } catch (_: Exception) {
                 remoteNote = "That subtitle didn't download."
             }
@@ -1056,6 +1114,7 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_ID = "id"
         const val EXTRA_FROM_START = "fromStart"
         const val EXTRA_LIBRARY_EMPTY = "libraryEmpty"
+        private const val MB = 1024L * 1024L
     }
 }
 
