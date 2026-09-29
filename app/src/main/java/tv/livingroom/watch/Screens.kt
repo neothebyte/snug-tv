@@ -235,7 +235,7 @@ private fun ServerStep(vm: AppModel) {
     var askAddress by remember { mutableStateOf(false) }
     val first = remember { FocusRequester() }
     BackHandler(enabled = vm.store.server.isNotBlank()) { vm.keepServer() }
-    LaunchedEffect(vm.findingServers, vm.servers.size) {
+    LaunchedEffect(vm.searching, vm.servers.size) {
         delay(80)
         runCatching { first.requestFocus() }
     }
@@ -248,8 +248,8 @@ private fun ServerStep(vm: AppModel) {
         Spacer(Modifier.height(8.dp))
         Text(
             when {
-                vm.findingServers -> "Looking for Jellyfin on your network…"
-                vm.servers.isEmpty() && vm.serversSearched -> "No servers found on this network. Enter the address instead."
+                vm.searching -> "Looking for Jellyfin on your network…"
+                vm.servers.isEmpty() && vm.searched -> "No servers found on this network. Enter the address instead."
                 vm.servers.isEmpty() -> "Enter your Jellyfin server's address."
                 else -> "Found on your network. Pick one, or enter an address."
             },
@@ -281,7 +281,7 @@ private fun ServerStep(vm: AppModel) {
             }
             item {
                 ProfileTile(
-                    name = if (vm.findingServers) "Searching…" else "Search again",
+                    name = if (vm.searching) "Searching…" else "Search again",
                     imageUrl = null,
                     icon = R.drawable.ic_search,
                     width = 170.dp
@@ -756,7 +756,7 @@ private fun SearchScreen(vm: AppModel) {
         Box(Modifier.weight(1f)) {
             if (vm.query.isBlank()) {
                 Text("Type with the remote. Results appear here.", style = TvType.body, modifier = Modifier.padding(top = 44.dp))
-            } else if (results.isEmpty() && vm.searching) {
+            } else if (results.isEmpty() && vm.searchPending) {
                 Text("Searching…", style = TvType.body, modifier = Modifier.padding(top = 44.dp))
             } else if (results.isEmpty()) {
                 Text("No matches for “${vm.query.trim()}”.", style = TvType.body, modifier = Modifier.padding(top = 44.dp))

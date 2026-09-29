@@ -21,6 +21,17 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
+/** A movie grid that the server fills a page at a time as it scrolls. */
+class MovieList(var fetch: (start: Int, limit: Int) -> MoviePage) {
+    var items by mutableStateOf<List<Movie>>(emptyList())
+    var total by mutableStateOf(0)
+    var loaded by mutableStateOf(false)
+    var loading by mutableStateOf(false)
+    var failed by mutableStateOf(false)
+    var generation = 0
+    val complete: Boolean get() = loaded && items.size >= total
+}
+
 enum class LoginStep { Server, Profiles }
 
 /** Where a Quick Connect sign-in has got to. */
@@ -31,17 +42,6 @@ sealed interface QuickState {
     /** The server has Quick Connect switched off. */
     data object Off : QuickState
     data class Failed(val note: String) : QuickState
-}
-
-/** A movie grid that the server fills a page at a time as it scrolls. */
-class MovieList(var fetch: (start: Int, limit: Int) -> MoviePage) {
-    var items by mutableStateOf<List<Movie>>(emptyList())
-    var total by mutableStateOf(0)
-    var loaded by mutableStateOf(false)
-    var loading by mutableStateOf(false)
-    var failed by mutableStateOf(false)
-    var generation = 0
-    val complete: Boolean get() = loaded && items.size >= total
 }
 
 class AppModel(app: Application) : AndroidViewModel(app) {
@@ -61,7 +61,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         private set
     var searchResults by mutableStateOf<List<Movie>>(emptyList())
         private set
-    var searching by mutableStateOf(false)
+    var searchPending by mutableStateOf(false)
         private set
     var similar by mutableStateOf<Map<String, List<Movie>>>(emptyMap())
         private set
@@ -77,9 +77,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         private set
     var servers by mutableStateOf<List<FoundServer>>(emptyList())
         private set
-    var findingServers by mutableStateOf(false)
+    var searching by mutableStateOf(false)
         private set
-    var serversSearched by mutableStateOf(false)
+    var searched by mutableStateOf(false)
         private set
     var quick by mutableStateOf<QuickState>(QuickState.Closed)
         private set
@@ -263,10 +263,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val needle = next.trim()
         if (needle.isEmpty()) {
             searchResults = emptyList()
-            searching = false
+            searchPending = false
             return
         }
-        searching = true
+        searchPending = true
         searchJob = viewModelScope.launch {
             // Wait for a pause in typing so each key press isn't its own search.
             delay(300)
@@ -279,7 +279,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             } catch (_: Exception) {
                 searchResults = emptyList()
             }
-            searching = false
+            searchPending = false
         }
     }
 
@@ -610,17 +610,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** Looks for Jellyfin servers on the home network. */
     fun findServers() {
-        if (findingServers) return
+        if (searching) return
         viewModelScope.launch {
-            findingServers = true
+            searching = true
             message = ""
             servers = try {
                 withContext(Dispatchers.IO) { ServerDiscovery.find(getApplication()) }
             } catch (_: Exception) {
                 emptyList()
             }
-            findingServers = false
-            serversSearched = true
+            searching = false
+            searched = true
         }
     }
 
@@ -735,7 +735,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         genreStats = null
         genreNames = null
         searchResults = emptyList()
-        searching = false
+        searchPending = false
         similar = emptyMap()
         shows = emptyMap()
         lists.clear()
