@@ -8,9 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import coil.imageLoader
-import coil.request.CachePolicy
-import coil.request.ImageRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -219,7 +216,6 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 if (generation != list.generation) return@launch
                 keep(page.items)
                 val have = list.items.mapTo(HashSet()) { it.id }
-                if (have.isNotEmpty()) preloadPosters(page.items)
                 list.items = list.items + page.items.filter { it.id !in have }
                 // A short page means the server has nothing more, whatever the count said.
                 list.total = if (page.items.size < PAGE) list.items.size else maxOf(page.total, list.items.size)
@@ -235,16 +231,6 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 if (generation == list.generation) list.loading = false
             }
-        }
-    }
-
-    /** Fetches posters for rows that are about to scroll in, so they're already there when they do. */
-    private fun preloadPosters(movies: List<Movie>) {
-        val context = getApplication<Application>()
-        for (movie in movies) {
-            val url = api.imageUrl(movie.id, "Primary", movie.primaryTag, 360) ?: continue
-            // Disk only: a few hundred decoded posters would push visible ones out of memory.
-            context.imageLoader.enqueue(ImageRequest.Builder(context).data(url).memoryCachePolicy(CachePolicy.DISABLED).build())
         }
     }
 
