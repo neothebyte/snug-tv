@@ -73,6 +73,33 @@ class SessionStore(context: Context) {
             prefs.edit().putBoolean(KEY_FRAME_RATE, value).apply()
         }
 
+    /** How far before the saved spot a resumed title starts, so the line that was cut off is heard again. */
+    var resumeBackSeconds: Int
+        get() = prefs.getInt(KEY_RESUME_BACK, 5).coerceIn(0, 30)
+        set(value) {
+            prefs.edit().putInt(KEY_RESUME_BACK, value).apply()
+        }
+
+    /** Episodes in a row with nobody touching the remote before asking "Are you still watching?"; 0 never asks. */
+    var stillWatchingAfter: Int
+        get() = prefs.getInt(KEY_STILL_WATCHING, 3).coerceIn(0, 10)
+        set(value) {
+            prefs.edit().putInt(KEY_STILL_WATCHING, value).apply()
+        }
+
+    var themeMusic: Boolean
+        get() = prefs.getBoolean(KEY_THEME_MUSIC, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_THEME_MUSIC, value).apply()
+        }
+
+    /** Minutes idle on a menu before the Snug screensaver; 0 leaves it to the TV's own. */
+    var screensaverMinutes: Int
+        get() = prefs.getInt(KEY_SCREENSAVER, 5).coerceIn(0, 60)
+        set(value) {
+            prefs.edit().putInt(KEY_SCREENSAVER, value).apply()
+        }
+
     val deviceId: String
         get() {
             val existing = prefs.getString(KEY_DEVICE, null)
@@ -114,5 +141,9 @@ class SessionStore(context: Context) {
         private const val KEY_AUTO = "autoSubs"
         private const val KEY_DEVICE = "device"
         private const val KEY_FRAME_RATE = "matchFrameRate"
+        private const val KEY_RESUME_BACK = "resumeBack"
+        private const val KEY_STILL_WATCHING = "stillWatching"
+        private const val KEY_THEME_MUSIC = "themeMusic"
+        private const val KEY_SCREENSAVER = "screensaver"
     }
 }

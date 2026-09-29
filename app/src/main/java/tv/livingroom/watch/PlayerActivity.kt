@@ -83,6 +83,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -96,7 +97,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.annotation.OptIn as AndroidOptIn
 
-private enum class Panel { Subtitles, Online, Audio, Chapters, Speed }
+private enum class Panel { Subtitles, Online, Audio, Chapters, Speed, Info }
 
 @AndroidOptIn(markerClass = [UnstableApi::class])
 class PlayerActivity : ComponentActivity() {
@@ -165,9 +166,17 @@ class PlayerActivity : ComponentActivity() {
     private var nextEpisode: Movie? = null
     private var extrasJob: Job? = null
     private var upNextDismissed = false
-    private var skippedIntroAt: Long? = null
-    /** Where the intro ends while the Skip intro button shows; null the rest of the time. */
-    private var introEndMs by mutableStateOf<Long?>(null)
+    /** Start times of the intros, recaps and previews already skipped in this title. */
+    private val skipped = mutableSetOf<Long>()
+    /** Where the part being offered for skipping ends while the Skip button shows; null the rest of the time. */
+    private var skipEndMs by mutableStateOf<Long?>(null)
+    private var skipLabel by mutableStateOf("Skip intro")
+    /** Episodes started by the Up next countdown since anyone last pressed the remote. */
+    private var autoChain = 0
+    /** The Up next card is asking "Are you still watching?" instead of counting down. */
+    private var asking by mutableStateOf(false)
+    /** The video decoder in use, for the Playback info panel. */
+    private var videoDecoder = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -195,7 +204,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun buildPlayer(): ExoPlayer {
         val dataSource = DefaultHttpDataSource.Factory()
-            .setUserAgent("SnugTV/1.9.0")
+            .setUserAgent("SnugTV/1.10.0")
             .setDefaultRequestProperties(mapOf("X-Emby-Token" to store.token.orEmpty()))
             .setConnectTimeoutMs(20_000)
             .setReadTimeoutMs(60_000)
@@ -214,6 +223,16 @@ class PlayerActivity : ComponentActivity() {
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
             .also { player ->
+                player.addAnalyticsListener(object : AnalyticsListener {
+                    override fun onVideoDecoderInitialized(
+                        eventTime: AnalyticsListener.EventTime,
+                        decoderName: String,
+                        initializedTimestampMs: Long,
+                        initializationDurationMs: Long
+                    ) {
+                        videoDecoder = decoderName
+                    }
+                })
                 player.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
                         ended = state == Player.STATE_ENDED
@@ -229,7 +248,8 @@ class PlayerActivity : ComponentActivity() {
                         if (state == Player.STATE_ENDED) {
                             reportStop()
                             val finished = movie
-                            if (finished?.isEpisode == true) offerNext(finished) else finish()
+                            // Nobody answered "Are you still watching?", so stop here rather than play on.
+                            if (finished?.isEpisode == true && !stillWatchingDue()) offerNext(finished) else finish()
                         }
                     }
 
@@ -306,7 +326,11 @@ class PlayerActivity : ComponentActivity() {
                     }
                     loadingNote = ""
                 }
-                prepare(if (fromStart) 0L else loaded.positionTicks)
+                // A show being watched again comes back to Continue watching if it was hidden.
+                loaded.seriesId?.let { series -> app.background.launch { runCatching { api.setShowHidden(series, false) } } }
+                // Resuming a few seconds early catches the line that was cut off.
+                val back = store.resumeBackSeconds * 10_000_000L
+                prepare(if (fromStart || loaded.positionTicks <= 0L) 0L else (loaded.positionTicks - back).coerceAtLeast(0L))
             } catch (failure: Exception) {
                 showError(failure)
             }
@@ -550,11 +574,12 @@ class PlayerActivity : ComponentActivity() {
         return if (duration > 300_000) duration - 30_000 else Long.MAX_VALUE
     }
 
-    /** Shows or hides Skip intro and the Up next card as the episode plays. */
+    /** Shows or hides the Skip button and the Up next card as the episode plays. */
     private fun checkMoments(nowMs: Long) {
         if (!started || error != null) return
-        val intro = segments.firstOrNull { it.type == "Intro" }
-        introEndMs = intro?.takeIf { nowMs >= it.startMs && nowMs < it.endMs - 1_000 && skippedIntroAt != it.startMs }?.endMs
+        val part = segments.firstOrNull { it.type in SKIPPABLE && nowMs >= it.startMs && nowMs < it.endMs - 1_000 && it.startMs !in skipped }
+        if (part != null) skipLabel = SKIPPABLE.getValue(part.type)
+        skipEndMs = part?.endMs
         val next = nextEpisode ?: return
         val at = upNextAtMs()
         if (nowMs < at - 1_000) {
@@ -565,16 +590,24 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /** Skips the intro, recap or preview the Skip button is showing for. */
     private fun skipIntro() {
-        val intro = segments.firstOrNull { it.type == "Intro" } ?: return
-        skippedIntroAt = intro.startMs
-        introEndMs = null
-        seekTo(intro.endMs)
+        val end = skipEndMs ?: return
+        segments.firstOrNull { it.type in SKIPPABLE && it.endMs == end }?.let { skipped += it.startMs }
+        skipEndMs = null
+        seekTo(end)
+    }
+
+    /** After a few episodes in a row with nobody touching the remote, ask before carrying on. */
+    private fun stillWatchingDue(): Boolean {
+        val limit = store.stillWatchingAfter
+        return limit > 0 && autoChain >= limit - 1
     }
 
     private fun showUpNext(next: Movie) {
         panel = null
         controls = false
+        asking = stillWatchingDue()
         upNext = next
     }
 
@@ -601,9 +634,11 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** Starts the offered episode in this same player, forgetting everything about the one that ended. */
-    private fun playNext() {
+    private fun playNext(auto: Boolean = false) {
         val next = upNext ?: return
+        if (auto) autoChain++
         upNext = null
+        asking = false
         // Leaving during the credits: tell the server where this one stopped first.
         reportStop()
         exo?.stop()
@@ -613,9 +648,10 @@ class PlayerActivity : ComponentActivity() {
         segments = emptyList()
         nextEpisode = null
         upNextDismissed = false
-        skippedIntroAt = null
-        introEndMs = null
+        skipped.clear()
+        skipEndMs = null
         started = false
+        videoDecoder = ""
         art = api.backdropUrl(next, 1280)
         showInfo(next)
         title = "${next.seriesName} · ${next.cardTitle}"
@@ -712,6 +748,8 @@ class PlayerActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
+        // Someone is there: the "still watching" count starts again.
+        if (event.action == KeyEvent.ACTION_DOWN) autoChain = 0
         if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE) {
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) goBack()
             return true
@@ -773,14 +811,18 @@ class PlayerActivity : ComponentActivity() {
             KeyEvent.KEYCODE_DPAD_LEFT -> seekBy(if (repeat > 2) -30_000 else -10_000)
             KeyEvent.KEYCODE_DPAD_RIGHT -> seekBy(if (repeat > 2) 30_000 else 10_000)
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                if (introEndMs != null && started) {
+                if (skipEndMs != null && started) {
                     skipIntro()
                 } else {
                     togglePlay()
                     showControls()
                 }
             }
-            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> showControls()
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_MENU -> showControls()
+            KeyEvent.KEYCODE_INFO -> {
+                showControls()
+                openPanel(Panel.Info)
+            }
             KeyEvent.KEYCODE_CAPTIONS -> {
                 showControls()
                 openPanel(Panel.Subtitles)
@@ -954,7 +996,7 @@ class PlayerActivity : ComponentActivity() {
                 Controls()
             }
             AnimatedVisibility(
-                started && introEndMs != null && !controls && seekPreviewMs == null && panel == null && error == null && upNext == null,
+                started && skipEndMs != null && !controls && seekPreviewMs == null && panel == null && error == null && upNext == null,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier.align(Alignment.BottomEnd).padding(horizontal = SafeX, vertical = SafeY)
@@ -1023,7 +1065,7 @@ class PlayerActivity : ComponentActivity() {
             Modifier.clip(RoundedCornerShape(20.dp)).background(Color.White).padding(horizontal = 18.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Skip intro  ›", style = TvType.button, color = Color(0xFF111111))
+            Text("$skipLabel  ›", style = TvType.button, color = Color(0xFF111111))
         }
     }
 
@@ -1032,16 +1074,18 @@ class PlayerActivity : ComponentActivity() {
     private fun UpNextCard(next: Movie) {
         val playFocus = remember { FocusRequester() }
         var left by remember(next.id) { mutableIntStateOf(UP_NEXT_SECONDS) }
+        val ask = asking
         LaunchedEffect(next.id) {
             delay(30)
             runCatching { playFocus.requestFocus() }
+            if (ask) return@LaunchedEffect
             while (left > 0) {
                 delay(1_000)
                 // Waits while paused, but keeps counting once the episode has ended.
                 val running = ended || exo?.isPlaying != false
                 if (running && panel == null) left--
             }
-            playNext()
+            playNext(auto = true)
         }
         Box(Modifier.fillMaxSize().padding(horizontal = SafeX, vertical = SafeY), contentAlignment = Alignment.BottomEnd) {
             Row(
@@ -1055,16 +1099,24 @@ class PlayerActivity : ComponentActivity() {
                     if (still != null) AsyncImage(model = still, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                 }
                 Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                    Kicker("Up next")
+                    Kicker(if (ask) "Are you still watching?" else "Up next")
                     Text(next.cardTitle, style = TvType.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("Starts in $left", style = TvType.small, modifier = Modifier.padding(top = 4.dp))
-                    Box(Modifier.padding(top = 6.dp).fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.2f))) {
-                        Box(Modifier.fillMaxHeight().fillMaxWidth((UP_NEXT_SECONDS - left) / UP_NEXT_SECONDS.toFloat()).background(Color.White))
+                    if (ask) {
+                        Text("Playback stops after the credits unless you carry on.", style = TvType.small, modifier = Modifier.padding(top = 4.dp))
+                    } else {
+                        Text("Starts in $left", style = TvType.small, modifier = Modifier.padding(top = 4.dp))
+                        Box(Modifier.padding(top = 6.dp).fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.2f))) {
+                            Box(Modifier.fillMaxHeight().fillMaxWidth((UP_NEXT_SECONDS - left) / UP_NEXT_SECONDS.toFloat()).background(Color.White))
+                        }
                     }
                     Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TvButton("Play now", icon = R.drawable.ic_play, primary = true, focusRequester = playFocus) { playNext() }
-                        TvButton(if (ended) "Back" else "Keep watching") {
-                            if (ended) finish() else keepWatching()
+                        TvButton(if (ask) "Keep watching" else "Play now", icon = R.drawable.ic_play, primary = true, focusRequester = playFocus) { playNext() }
+                        if (ask) {
+                            TvButton("Stop") { finish() }
+                        } else {
+                            TvButton(if (ended) "Back" else "Keep watching") {
+                                if (ended) finish() else keepWatching()
+                            }
                         }
                     }
                 }
@@ -1161,12 +1213,14 @@ class PlayerActivity : ComponentActivity() {
         val audioFocus = remember { FocusRequester() }
         val chaptersFocus = remember { FocusRequester() }
         val speedFocus = remember { FocusRequester() }
+        val infoFocus = remember { FocusRequester() }
         LaunchedEffect(Unit) {
             val target = when (lastPanel) {
                 Panel.Subtitles, Panel.Online -> subsFocus
                 Panel.Audio -> audioFocus
                 Panel.Chapters -> chaptersFocus
                 Panel.Speed -> speedFocus
+                Panel.Info -> infoFocus
                 null -> playFocus
             }
             lastPanel = null
@@ -1215,6 +1269,7 @@ class PlayerActivity : ComponentActivity() {
                     }
                     if (chapters.size > 1) TvButton("Chapters", icon = R.drawable.ic_chapters, focusRequester = chaptersFocus) { openPanel(Panel.Chapters) }
                     TvButton(if (speed == 1f) "1×" else "${speed}×", icon = R.drawable.ic_speed, focusRequester = speedFocus) { openPanel(Panel.Speed) }
+                    TvButton("Info", icon = R.drawable.ic_info, focusRequester = infoFocus) { openPanel(Panel.Info) }
                 }
             }
         }
@@ -1279,6 +1334,7 @@ class PlayerActivity : ComponentActivity() {
                     Panel.Audio -> "Audio"
                     Panel.Chapters -> "Chapters"
                     Panel.Speed -> "Playback speed"
+                    Panel.Info -> "Playback info"
                 }
                 Text(heading, style = TvType.headline, modifier = Modifier.padding(bottom = 12.dp))
                 val rows = panelRows(which)
@@ -1340,6 +1396,65 @@ class PlayerActivity : ComponentActivity() {
         Panel.Speed -> listOf(0.75f, 1f, 1.25f, 1.5f, 2f).map { value ->
             PanelItem(if (value == 1f) "Normal" else "${value}×", selected = speed == value) { changeSpeed(value) }
         }
+        Panel.Info -> infoRows()
+    }
+
+    /** What the Playback info panel says: how the server is sending the video and how well the TV is keeping up. */
+    private fun infoRows(): List<PanelItem> {
+        val close = { closePanel() }
+        val current = plan ?: return listOf(PanelItem("Starting…", action = close))
+        val player = exo
+        val url = current.source.transcodingUrl.orEmpty()
+        val codes = Regex("TranscodeReasons=([^&]*)", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1)
+            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }?.split(',')?.filter { it.isNotBlank() }.orEmpty()
+        val reasons = buildList<String> {
+            codes.mapTo(this) { code -> TRANSCODE_REASONS[code] ?: code.replace(Regex("([a-z])([A-Z])"), "$1 $2").lowercase() }
+            if (current.burn && "SubtitleCodecNotSupported" !in codes) add(TRANSCODE_REASONS.getValue("SubtitleCodecNotSupported"))
+            if (isEmpty() && current.hls) add("playing the file directly didn't work on this TV")
+        }
+        val because = if (reasons.isEmpty()) "" else " Because ${reasons.joinToString(", and ")}."
+        val reencoding = current.burn || current.mode == PlayMode.Transcode ||
+            Regex("TranscodeReasons=[^&]*Video", RegexOption.IGNORE_CASE).containsMatchIn(url)
+        val how = when {
+            !current.hls -> PanelItem("Straight from the drive", "The server isn't converting anything.", action = close)
+            reencoding -> PanelItem("Converted by the server", "Hard work for the Pi, capped at 1080p.$because", action = close)
+            current.mode == PlayMode.RemuxAudio -> PanelItem("Sound converted by the server", "The picture is untouched; converting sound is light work.$because", action = close)
+            else -> PanelItem("Repackaged by the server", "Nothing is re-encoded, so this is light work for the Pi.$because", action = close)
+        }
+        return buildList {
+            add(how)
+            player?.videoFormat?.let { format ->
+                val codec = when (format.sampleMimeType) {
+                    MimeTypes.VIDEO_H265 -> "HEVC"
+                    MimeTypes.VIDEO_H264 -> "H.264"
+                    MimeTypes.VIDEO_AV1 -> "AV1"
+                    MimeTypes.VIDEO_VP9 -> "VP9"
+                    MimeTypes.VIDEO_DOLBY_VISION -> "Dolby Vision"
+                    else -> format.sampleMimeType?.substringAfter('/')?.uppercase().orEmpty()
+                }
+                val fps = format.frameRate.takeIf { it > 0f }?.let { "${hertz(it)} fps" }
+                val decoder = when {
+                    videoDecoder.isBlank() -> ""
+                    SOFTWARE_DECODERS.any { videoDecoder.startsWith(it, ignoreCase = true) } -> "software decoder (slow)"
+                    else -> "hardware decoder"
+                }
+                add(PanelItem("Picture", listOf("${format.width}×${format.height}", codec, fps.orEmpty(), decoder).filter { it.isNotBlank() }.joinToString(" · "), action = close))
+            }
+            @Suppress("DEPRECATION")
+            val mode = runCatching { windowManager.defaultDisplay.mode }.getOrNull()
+            if (mode != null) add(PanelItem("Screen", "${mode.physicalWidth}×${mode.physicalHeight} at ${hertz(mode.refreshRate)} Hz", action = close))
+            audioStreams.find { it.index == selectedAudio }?.let { stream ->
+                add(PanelItem("Sound", stream.label() + if (stream.channels > 0) " · ${channelText(stream.channels)}" else "", action = close))
+            }
+            player?.videoDecoderCounters?.let { counters ->
+                counters.ensureUpdated()
+                val dropped = counters.droppedBufferCount
+                val shown = counters.renderedOutputBufferCount
+                val verdict = if (shown > 250 && dropped * 100 > shown) "This TV is struggling with this file." else "Playing smoothly."
+                add(PanelItem("Smoothness", "$dropped of ${shown + dropped} frames dropped. $verdict", action = close))
+            }
+            player?.let { add(PanelItem("Loaded ahead", "${it.totalBufferedDuration / 1000} seconds", action = close)) }
+        }
     }
 
     @Composable
@@ -1363,7 +1478,7 @@ class PlayerActivity : ComponentActivity() {
             Column(Modifier.weight(1f)) {
                 Text(row.label, style = TvType.button, color = if (focused) Color(0xFF111111) else Cream, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (row.detail.isNotBlank()) {
-                    Text(row.detail, style = TvType.small, color = if (focused) Color(0xFF444444) else Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(row.detail, style = TvType.small, color = if (focused) Color(0xFF444444) else Muted, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -1396,10 +1511,34 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_HEADLINE = "headline"
         private const val MB = 1024L * 1024L
         private const val UP_NEXT_SECONDS = 10
+        /** Parts of an episode the Skip button offers to jump over, with its label for each. */
+        private val SKIPPABLE = mapOf("Intro" to "Skip intro", "Recap" to "Skip recap", "Preview" to "Skip preview")
+        /** Android's own software decoders; anything else on a TV box is the chip's hardware decoder. */
+        private val SOFTWARE_DECODERS = listOf("OMX.google.", "c2.android.", "c2.google.")
+        /** Plain-language reasons for the TranscodeReasons Jellyfin puts in a stream address. */
+        private val TRANSCODE_REASONS = mapOf(
+            "ContainerNotSupported" to "this TV can't open the file type",
+            "VideoCodecNotSupported" to "this TV can't decode the picture format",
+            "AudioCodecNotSupported" to "this TV can't play the sound format",
+            "SubtitleCodecNotSupported" to "the subtitles have to be drawn into the picture",
+            "VideoRangeTypeNotSupported" to "this TV can't show this kind of HDR",
+            "VideoBitDepthNotSupported" to "this TV can't show 10-bit colour here",
+            "VideoProfileNotSupported" to "the picture uses a profile this TV can't decode",
+            "VideoLevelNotSupported" to "the picture is too demanding for this TV",
+            "VideoResolutionNotSupported" to "the picture is bigger than this TV allows",
+            "AudioChannelsNotSupported" to "this TV can't play that many sound channels",
+            "ContainerBitrateExceedsLimit" to "the file is bigger than the streaming limit",
+            "VideoBitrateNotSupported" to "the picture is bigger than the streaming limit",
+            "AudioBitrateNotSupported" to "the sound is bigger than the streaming limit",
+            "DirectPlayError" to "playing the file directly failed"
+        )
     }
 }
 
 private fun clock(ms: Long): String = ticksToClock(ms * 10_000L)
+
+/** 23.976 stays 23.976, 60.0 becomes 60. */
+private fun hertz(rate: Float): String = "%.3f".format(java.util.Locale.US, rate).trimEnd('0').trimEnd('.')
 
 private fun delayText(ms: Long): String = when {
     ms == 0L -> "on time"
