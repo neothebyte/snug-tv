@@ -88,11 +88,12 @@ class JellyfinClient(
         personIds: List<String> = emptyList(),
         search: String? = null,
         fields: String = GRID_FIELDS,
-        countTotal: Boolean = true
+        countTotal: Boolean = true,
+        types: String = "Movie"
     ): MoviePage {
         val userId = store.userId ?: error("Sign in again.")
         val query = buildString {
-            append("/Users/$userId/Items?IncludeItemTypes=Movie&Recursive=true")
+            append("/Users/$userId/Items?IncludeItemTypes=$types&Recursive=true")
             append("&SortBy=$sortBy&SortOrder=$sortOrder&StartIndex=$start&Limit=$limit")
             append("&Fields=$fields&EnableImageTypes=Primary,Backdrop&ImageTypeLimit=1")
             append("&EnableTotalRecordCount=$countTotal")
@@ -145,6 +146,57 @@ class JellyfinClient(
             }
         }
     }
+
+    /** Movies and episodes that were stopped part-way, most recent first. */
+    fun resume(limit: Int, fields: String = HOME_FIELDS): List<Movie> {
+        val userId = store.userId ?: error("Sign in again.")
+        val json = JSONObject(
+            call("GET", "/Users/$userId/Items/Resume?Limit=$limit&MediaTypes=Video&IncludeItemTypes=Movie,Episode&Fields=$fields$IMAGES")
+        )
+        return parseItems(json)
+    }
+
+    /** The next unwatched episode of each show being watched, or of one show when [seriesId] is given. */
+    fun nextUp(limit: Int, seriesId: String? = null, fields: String = HOME_FIELDS): List<Movie> {
+        val userId = store.userId ?: error("Sign in again.")
+        val series = seriesId?.let { "&SeriesId=${encode(it)}" }.orEmpty()
+        val json = JSONObject(call("GET", "/Shows/NextUp?UserId=$userId&Limit=$limit&Fields=$fields$IMAGES$series"))
+        return parseItems(json)
+    }
+
+    fun seasons(seriesId: String): List<Movie> {
+        val userId = store.userId ?: error("Sign in again.")
+        val json = JSONObject(call("GET", "/Shows/${encode(seriesId)}/Seasons?UserId=$userId&Fields=$GRID_FIELDS$IMAGES"))
+        return parseItems(json)
+    }
+
+    fun episodes(seriesId: String, seasonId: String): List<Movie> {
+        val userId = store.userId ?: error("Sign in again.")
+        val json = JSONObject(
+            call("GET", "/Shows/${encode(seriesId)}/Episodes?UserId=$userId&SeasonId=${encode(seasonId)}&Fields=Overview$IMAGES")
+        )
+        return parseItems(json)
+    }
+
+    /** The episode after [episode] in the show's order, across seasons, or null at the end of the show. */
+    fun episodeAfter(episode: Movie): Movie? {
+        val userId = store.userId ?: error("Sign in again.")
+        val seriesId = episode.seriesId ?: return null
+        val json = JSONObject(
+            call("GET", "/Shows/${encode(seriesId)}/Episodes?UserId=$userId&StartItemId=${encode(episode.id)}&Limit=2&Fields=Overview$IMAGES")
+        )
+        return parseItems(json).getOrNull(1)?.takeIf { it.id != episode.id }
+    }
+
+    /** A poster for [item]: episodes use their show's, since their own picture is a wide still. */
+    fun posterUrl(item: Movie, width: Int = 360): String? =
+        if (item.isEpisode && item.seriesId != null && item.seriesPrimaryTag != null) {
+            imageUrl(item.seriesId, "Primary", item.seriesPrimaryTag, width)
+        } else {
+            imageUrl(item.id, "Primary", item.primaryTag, width)
+        }
+
+    fun backdropUrl(item: Movie, width: Int): String? = imageUrl(item.backdropOwner ?: item.id, "Backdrop", item.backdropTag, width)
 
     fun item(id: String): Movie {
         val userId = store.userId ?: error("Sign in again.")
@@ -437,7 +489,7 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.4.0\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.7.0\"$token"
     }
 
     /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */
@@ -453,6 +505,7 @@ class JellyfinClient(
         /** Enough for a poster and the top of the detail page. Cast and the rest load when a movie opens. */
         const val GRID_FIELDS = "Overview,Genres,BackdropImageTags"
         const val HOME_FIELDS = "Overview,BackdropImageTags"
+        private const val IMAGES = "&EnableImageTypes=Primary,Backdrop&ImageTypeLimit=1"
         const val OPEN_SUBTITLES = "4b9ed42f518548b598036ff2989014c4"
         private const val MAX_BITRATE = 150_000_000
         private const val PLAYABLE_WITHOUT_DOLBY_VISION =

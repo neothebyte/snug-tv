@@ -65,6 +65,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         private set
     var similar by mutableStateOf<Map<String, List<Movie>>>(emptyMap())
         private set
+    var shows by mutableStateOf<Map<String, SeriesView>>(emptyMap())
+        private set
     var details by mutableStateOf<Map<String, Movie>>(emptyMap())
         private set
     var profiles by mutableStateOf<List<Profile>>(emptyList())
@@ -138,7 +140,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun Screen.isRoot(): Boolean =
-        this == Screen.Home || this == Screen.Search || this == Screen.Movies || this == Screen.Genres || this == Screen.Settings
+        this == Screen.Home || this == Screen.Search || this == Screen.Movies || this == Screen.Shows || this == Screen.Genres || this == Screen.Settings
 
     fun listState(key: String): LazyListState = listStates.getOrPut(key) { LazyListState() }
 
@@ -164,6 +166,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         lists[screen.key]?.let { return it }
         val fetch: (Int, Int) -> MoviePage = when (screen) {
             Screen.Movies -> moviesFetch()
+            Screen.Shows -> { start, limit -> api.movies(start, limit, types = "Series") }
             is Screen.Genre -> { start, limit -> api.movies(start, limit, genre = screen.name) }
             is Screen.Person -> { start, limit -> api.movies(start, limit, person = screen.name, personType = screen.role) }
             else -> return null
@@ -322,7 +325,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** Titles first, then films with a matching person, then films in a matching genre. */
     private suspend fun searchMovies(needle: String): List<Movie> = coroutineScope {
         val lower = needle.lowercase()
-        val titles = async { api.movies(limit = 48, search = needle, countTotal = false).items }
+        val titles = async { api.movies(limit = 48, search = needle, countTotal = false, types = "Movie,Series").items }
         val byPeople = async {
             runCatching {
                 val ids = api.findPeople(needle, 3)
@@ -404,6 +407,18 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         if (root == Screen.Settings) loadOpenSubtitles()
     }
 
+    /** The page for [item]: a movie's page, a show's page, or an episode within its show. */
+    fun screenFor(item: Movie): Screen {
+        val seriesId = item.seriesId
+        return when {
+            item.isSeries -> Screen.Series(item.id)
+            item.isEpisode && seriesId != null -> Screen.Series(seriesId, item.id)
+            else -> Screen.Detail(item.id)
+        }
+    }
+
+    fun openItem(item: Movie) = open(screenFor(item))
+
     fun open(next: Screen) {
         if (screen == next) return
         backStack.addLast(screen)
@@ -413,6 +428,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         restoreKey = null
         screen = next
         if (next is Screen.Detail) loadDetail(next.id)
+        if (next is Screen.Series) {
+            shows = shows - next.id
+            loadSeries(next.id, next.episodeId)
+        }
     }
 
     fun back(): Boolean {
@@ -435,6 +454,72 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         details = details.filterKeys { it in open }
         similar = similar.filterKeys { it in open }
         open.forEach { loadDetail(it) }
+        val openShows = (backStack.toList() + screen).filterIsInstance<Screen.Series>().map { it.id }.toSet()
+        shows = shows.filterKeys { it in openShows }
+        openShows.forEach { id -> loadSeries(id, null, keepSeason = true) }
+    }
+
+    /**
+     * Loads a show with its seasons and the episodes of one season: the season of [episodeId] when given,
+     * else the season the viewer is up to. [keepSeason] keeps the season already on screen, for refreshes.
+     */
+    private fun loadSeries(id: String, episodeId: String?, keepSeason: Boolean = false) {
+        val shown = shows[id]?.selected?.takeIf { keepSeason }
+        viewModelScope.launch {
+            try {
+                val view = withContext(Dispatchers.IO) {
+                    coroutineScope {
+                        val series = async { api.item(id) }
+                        val seasons = async { api.seasons(id) }
+                        val next = async { runCatching { api.nextUp(1, seriesId = id).firstOrNull() }.getOrNull() }
+                        val landing = async { episodeId?.let { runCatching { api.item(it) }.getOrNull() } }
+                        val list = seasons.await()
+                        val upNext = next.await()
+                        fun known(season: String?) = season?.takeIf { wanted -> list.any { it.id == wanted } }
+                        val season = known(shown)
+                            ?: known(landing.await()?.seasonId)
+                            ?: known(upNext?.seasonId)
+                            ?: list.firstOrNull { (it.season ?: 0) > 0 }?.id
+                            ?: list.firstOrNull()?.id
+                        val episodes = season?.let { api.episodes(id, it) }.orEmpty()
+                        SeriesView(
+                            series = series.await(),
+                            seasons = list,
+                            selected = season,
+                            episodes = if (season != null) mapOf(season to episodes) else emptyMap(),
+                            next = upNext ?: episodes.firstOrNull()
+                        )
+                    }
+                }
+                shows = shows + (id to view)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (error is JellyfinException && error.code == 401) {
+                    signOut()
+                    return@launch
+                }
+                if (id !in shows) message = "That show didn't open."
+            }
+        }
+    }
+
+    fun selectSeason(seriesId: String, seasonId: String) {
+        val view = shows[seriesId] ?: return
+        if (view.selected == seasonId) return
+        shows = shows + (seriesId to view.copy(selected = seasonId))
+        if (seasonId in view.episodes) return
+        viewModelScope.launch {
+            try {
+                val episodes = withContext(Dispatchers.IO) { api.episodes(seriesId, seasonId) }
+                val latest = shows[seriesId] ?: return@launch
+                shows = shows + (seriesId to latest.copy(episodes = latest.episodes + (seasonId to episodes)))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                message = "That season didn't load."
+            }
+        }
     }
 
     /** Each Home row asks the server for just its own posters. */
@@ -446,8 +531,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 val fields = JellyfinClient.HOME_FIELDS
                 val rows = withContext(Dispatchers.IO) {
                     coroutineScope {
-                        val resume = async {
-                            api.movies(limit = 16, sortBy = "DatePlayed", sortOrder = "Descending", filters = "IsResumable", fields = fields, countTotal = false).items
+                        val resume = async { api.resume(16, fields) }
+                        val nextUp = async { runCatching { api.nextUp(16, fields = fields) }.getOrDefault(emptyList()) }
+                        val newShows = async {
+                            runCatching {
+                                api.movies(limit = 16, sortBy = "DateLastContentAdded,SortName", sortOrder = "Descending", fields = fields, countTotal = false, types = "Series").items
+                            }.getOrDefault(emptyList())
                         }
                         val unwatched = async {
                             api.movies(limit = 30, sortBy = "DateCreated,SortName", sortOrder = "Descending", filters = "IsUnplayed", fields = fields, countTotal = false)
@@ -455,11 +544,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                         }
                         val favorites = async { api.movies(limit = 16, filters = "IsFavorite", fields = fields, countTotal = false).items }
                         val recent = async { api.movies(limit = 18, sortBy = "DateCreated,SortName", sortOrder = "Descending", fields = fields) }
-                        HomeRows(resume.await(), unwatched.await(), favorites.await(), recent.await())
+                        HomeRows(resume.await(), nextUp.await(), unwatched.await(), favorites.await(), recent.await(), newShows.await())
                     }
                 }
                 rows.all().forEach { keep(it) }
-                libraryEmpty = rows.recent.total == 0
+                libraryEmpty = rows.recent.total == 0 && rows.shows.isEmpty()
                 // Genre rows sit mid-page, so fill them in the same pass when we know last time's top genres.
                 // Adding them later would push the rows below down while someone is looking.
                 val known = home?.shelves.orEmpty().filter { it.genre != null }.ifEmpty {
@@ -513,16 +602,27 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         if (!list.loaded) loadMore(list)
     }
 
-    private class HomeRows(val resume: List<Movie>, val unwatched: List<Movie>, val favorites: List<Movie>, val recent: MoviePage) {
-        fun all() = listOf(resume, unwatched, favorites, recent.items)
+    private class HomeRows(
+        val resume: List<Movie>,
+        val nextUp: List<Movie>,
+        val unwatched: List<Movie>,
+        val favorites: List<Movie>,
+        val recent: MoviePage,
+        val shows: List<Movie>
+    ) {
+        fun all() = listOf(resume, nextUp, unwatched, favorites, recent.items, shows)
 
         fun feed(genres: List<Shelf>): HomeFeed {
             val shelves = buildList {
                 if (resume.isNotEmpty()) add(Shelf("Continue watching", resume))
+                // Episodes already in Continue watching don't need to show twice.
+                val started = resume.mapTo(HashSet()) { it.id }
+                nextUp.filter { it.id !in started }.takeIf { it.isNotEmpty() }?.let { add(Shelf("Next up", it)) }
                 if (unwatched.isNotEmpty()) add(Shelf("Unwatched", unwatched))
                 if (favorites.isNotEmpty()) add(Shelf("Favorites", favorites))
                 addAll(genres)
                 if (recent.items.isNotEmpty()) add(Shelf("Recently added", recent.items))
+                if (shows.isNotEmpty()) add(Shelf("TV shows with new episodes", shows))
             }
             return HomeFeed(resume.firstOrNull() ?: recent.items.firstOrNull(), resume.isNotEmpty(), shelves)
         }
@@ -706,6 +806,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         searchResults = emptyList()
         searchPending = false
         similar = emptyMap()
+        shows = emptyMap()
         lists.clear()
         seen.clear()
         details = emptyMap()
@@ -827,6 +928,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         lists.values.forEach { list -> if (list.items.any { it.id == id }) list.items = swap(list.items) }
         searchResults = swap(searchResults)
         similar = similar.mapValues { swap(it.value) }
+        shows = shows.mapValues { (_, view) ->
+            view.copy(
+                series = if (view.series.id == id) transform(view.series) else view.series,
+                episodes = view.episodes.mapValues { swap(it.value) }
+            )
+        }
     }
 
     companion object {
