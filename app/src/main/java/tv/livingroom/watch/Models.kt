@@ -103,9 +103,37 @@ data class Movie(
     val positionTicks: Long,
     val lastPlayed: Long,
     val chapters: List<ChapterMark>,
-    val streams: List<MediaStreamInfo>
+    val streams: List<MediaStreamInfo>,
+    /** Jellyfin's item type: Movie, Series, Season or Episode. */
+    val type: String = "Movie",
+    val seriesId: String? = null,
+    val seriesName: String = "",
+    val seriesPrimaryTag: String? = null,
+    val seasonId: String? = null,
+    /** Season number of an episode, or the number of a season. */
+    val season: Int? = null,
+    val episode: Int? = null,
+    /** Where the backdrop comes from when the item has none of its own (an episode borrows its show's). */
+    val backdropOwner: String? = null,
+    val unplayedCount: Int = 0,
+    val endYear: Int? = null,
+    val status: String = ""
 ) {
+    val isSeries: Boolean get() = type == "Series"
+    val isEpisode: Boolean get() = type == "Episode"
     val sortLabel: String get() = sortName.ifBlank { name }
+
+    /** "S2:E5", or blank for anything that isn't a numbered episode. */
+    val episodeCode: String
+        get() = if (isEpisode && episode != null) "S${season ?: 0}:E$episode" else ""
+
+    /** How the item is named on a poster: episodes lead with their number. */
+    val cardTitle: String
+        get() = if (isEpisode) listOf(episodeCode, name).filter { it.isNotBlank() }.joinToString(" · ") else name
+
+    /** The name to show in big type: an episode is known by its show. */
+    val headline: String
+        get() = if (isEpisode && seriesName.isNotBlank()) seriesName else name
     val progress: Float
         get() = if (runtimeTicks > 0L && positionTicks > 0L) (positionTicks.toFloat() / runtimeTicks).coerceIn(0f, 1f) else 0f
 }
@@ -172,6 +200,16 @@ data class HomeFeed(val hero: Movie?, val resumeFirst: Boolean, val shelves: Lis
 
 data class MoviePage(val items: List<Movie>, val total: Int)
 
+/** Everything a show's page shows. Episodes load one season at a time. */
+data class SeriesView(
+    val series: Movie,
+    val seasons: List<Movie>,
+    val selected: String?,
+    val episodes: Map<String, List<Movie>>,
+    /** The episode Play starts: the next one to watch, else the first. */
+    val next: Movie?
+)
+
 data class GenreStat(val name: String, val count: Int, val cover: Movie?)
 
 private val GENERATED_TITLE = Regex("^(und|undefined)\\b| - (SUBRIP|SRT|PGSSUB|DVDSUB|ASS|SSA|AAC|AC3|EAC3|DTS|TRUEHD|FLAC|OPUS|MP3)\\b", RegexOption.IGNORE_CASE)
@@ -182,6 +220,9 @@ fun parseMovie(json: JSONObject): Movie {
     val user = json.optJSONObject("UserData")
     val imageTags = json.optJSONObject("ImageTags")
     val backdrops = json.optJSONArray("BackdropImageTags")
+    val ownBackdrop = backdrops?.optString(0)?.takeIf { it.isNotBlank() }
+    val parentBackdrop = json.optJSONArray("ParentBackdropImageTags")?.optString(0)?.takeIf { it.isNotBlank() }
+    val type = json.optString("Type").ifBlank { "Movie" }
     return Movie(
         id = json.optString("Id"),
         name = json.optString("Name"),
@@ -197,15 +238,30 @@ fun parseMovie(json: JSONObject): Movie {
         studios = json.optJSONArray("Studios").toNames(),
         dateCreated = json.optString("DateCreated"),
         primaryTag = imageTags?.optString("Primary")?.takeIf { it.isNotBlank() },
-        backdropTag = backdrops?.optString(0)?.takeIf { it.isNotBlank() },
+        backdropTag = ownBackdrop ?: parentBackdrop,
         played = user?.optBoolean("Played") == true,
         favorite = user?.optBoolean("IsFavorite") == true,
         positionTicks = user?.optLong("PlaybackPositionTicks") ?: 0L,
         lastPlayed = parseServerTime(user?.optString("LastPlayedDate").orEmpty()),
         chapters = json.optJSONArray("Chapters").toChapters(),
-        streams = json.optJSONArray("MediaStreams").toStreams()
+        streams = json.optJSONArray("MediaStreams").toStreams(),
+        type = type,
+        seriesId = json.optString("SeriesId").takeIf { it.isNotBlank() },
+        seriesName = json.optString("SeriesName"),
+        seriesPrimaryTag = json.optString("SeriesPrimaryImageTag").takeIf { it.isNotBlank() },
+        seasonId = json.optString("SeasonId").takeIf { it.isNotBlank() },
+        season = json.optIntOrNull(if (type == "Season") "IndexNumber" else "ParentIndexNumber"),
+        episode = if (type == "Episode") json.optIntOrNull("IndexNumber") else null,
+        backdropOwner = if (ownBackdrop == null && parentBackdrop != null) json.optString("ParentBackdropItemId").takeIf { it.isNotBlank() } else null,
+        unplayedCount = user?.optInt("UnplayedItemCount") ?: 0,
+        endYear = parseServerTime(json.optString("EndDate")).takeIf { it > 0L }?.let {
+            java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { timeInMillis = it }.get(java.util.Calendar.YEAR)
+        },
+        status = json.optString("Status")
     )
 }
+
+private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) optInt(key) else null
 
 fun parseProfile(json: JSONObject): Profile {
     val tag = json.optString("PrimaryImageTag")
@@ -352,12 +408,12 @@ fun playbackError(error: Throwable?, libraryEmpty: Boolean): String {
     }
     val text = error?.message.orEmpty()
     if (libraryEmpty || code == 404 || code >= 500 || Regex("No media|missing", RegexOption.IGNORE_CASE).containsMatchIn(text)) {
-        return "This movie can't start. If the movie drive isn't mounted, plug it in and restart Jellyfin."
+        return "This can't start. If the movie drive isn't mounted, plug it in and restart Jellyfin."
     }
     if (error is java.io.IOException || error?.cause is java.io.IOException) {
         return "Lost the connection to Jellyfin. Check that the server is on and try again."
     }
-    return "This movie can't start. The file may be damaged or in a format this TV can't play."
+    return "This can't start. The file may be damaged or in a format this TV can't play."
 }
 
 fun streamMatchesLanguage(stream: MediaStreamInfo, code: String): Boolean {

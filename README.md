@@ -9,8 +9,9 @@ Living Room installs beside the official Jellyfin app: its package is `tv.living
 **Browsing**
 - Finds Jellyfin servers on the home network by itself, or takes a typed address (`http://` and `:8096` are filled in when left out).
 - Profile picker, with password entry only for profiles that need one, plus Quick Connect: the TV shows a code you approve from the Jellyfin app on your phone.
-- Home with a featured title and shelves: Continue watching, Unwatched, Favorites, the four biggest genres, and Recently added.
+- Home with a featured title and shelves: Continue watching (movies and episodes), Next up, Unwatched, Favorites, the four biggest genres, Recently added, and TV shows with new episodes.
 - Full movie grid, genre tiles, and search with an on-screen keyboard.
+- TV shows: a grid of shows, and a page per show with a Play or Resume button for the next episode, seasons as tabs, and the episode list with progress and watched marks. When an episode ends, the next one starts after a 10-second countdown.
 - Title page with resume and start-over, favourite and watched toggles, format badges, and subtitle and audio pickers.
 - A side rail for sections. Back always returns focus to the poster or button you came from.
 
@@ -55,7 +56,7 @@ On the television, open **Living Room**, pick your server (or enter its address,
 
 Requirements: Android TV or Google TV on Android 7.0 (API 24) or newer, and a Jellyfin 10.10+ server on the local network. The app uses plain HTTP, which is intended for a home LAN.
 
-Current limits: only movie libraries are shown (no TV shows, music or Live TV yet), and the app loads up to 1,000 movies.
+Current limits: movies and TV shows are shown (no music or Live TV yet), and the app loads up to 1,000 movies.
 
 ## Build from source
 
