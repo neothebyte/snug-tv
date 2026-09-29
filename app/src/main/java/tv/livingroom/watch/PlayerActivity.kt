@@ -172,7 +172,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun buildPlayer(): ExoPlayer {
         val dataSource = DefaultHttpDataSource.Factory()
-            .setUserAgent("LivingRoomTV/1.3")
+            .setUserAgent("LivingRoomTV/1.5")
             .setDefaultRequestProperties(mapOf("X-Emby-Token" to store.token.orEmpty()))
             .setConnectTimeoutMs(20_000)
             .setReadTimeoutMs(60_000)
