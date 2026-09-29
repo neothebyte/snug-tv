@@ -1,8 +1,8 @@
-# Living Room — Android TV
+# Snug — Android TV
 
 A native Android TV client for [Jellyfin](https://jellyfin.org), built for the remote. Browse the movie library from the couch, pick up where you left off, and play 4K files straight from the server whenever the television can decode them.
 
-Living Room installs beside the official Jellyfin app: its package is `tv.livingroom.watch`, not `org.jellyfin.androidtv`.
+Snug installs beside the official Jellyfin app: its package is `tv.livingroom.watch`, not `org.jellyfin.androidtv`.
 
 ## Features
 
@@ -52,7 +52,7 @@ adb install -r LivingRoomTV.apk
 
 To try a build before it is released, open a pull request's run under **Actions → Build** and download the `LivingRoomTV` artifact (a zip with the APK inside). They are signed with the same release key as local builds, so they install over the app already on the television.
 
-On the television, open **Living Room**, pick your server (or enter its address, for example `192.168.1.10`), and choose a profile or use Quick Connect.
+On the television, open **Snug**, pick your server (or enter its address, for example `192.168.1.10`), and choose a profile or use Quick Connect.
 
 Requirements: Android TV or Google TV on Android 7.0 (API 24) or newer, and a Jellyfin 10.10+ server on the local network. The app uses plain HTTP, which is intended for a home LAN.
 
