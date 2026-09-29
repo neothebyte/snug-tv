@@ -68,7 +68,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 
@@ -214,10 +219,98 @@ private fun DefaultFocus(vm: AppModel, restore: String?, requester: FocusRequest
 
 @Composable
 private fun LoginScreen(vm: AppModel) {
+    when (vm.loginStep) {
+        LoginStep.Server -> ServerStep(vm)
+        LoginStep.Profiles -> ProfileStep(vm)
+    }
+    QuickConnectDialog(vm)
+}
+
+@Composable
+private fun ServerStep(vm: AppModel) {
+    var askAddress by remember { mutableStateOf(false) }
+    val first = remember { FocusRequester() }
+    BackHandler(enabled = vm.store.server.isNotBlank()) { vm.keepServer() }
+    LaunchedEffect(vm.findingServers, vm.servers.size) {
+        delay(80)
+        runCatching { first.requestFocus() }
+    }
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = SafeX + 24.dp, vertical = SafeY),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Kicker("Living Room")
+        Text("Choose your server", style = TvType.display)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            when {
+                vm.findingServers -> "Looking for Jellyfin on your network…"
+                vm.servers.isEmpty() && vm.serversSearched -> "No servers found on this network. Enter the address instead."
+                vm.servers.isEmpty() -> "Enter your Jellyfin server's address."
+                else -> "Found on your network. Pick one, or enter an address."
+            },
+            style = TvType.body
+        )
+        Spacer(Modifier.height(24.dp))
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            contentPadding = PaddingValues(vertical = 10.dp, horizontal = 6.dp)
+        ) {
+            items(vm.servers, key = { it.id }) { server ->
+                ProfileTile(
+                    name = server.name,
+                    imageUrl = null,
+                    icon = R.drawable.ic_server,
+                    note = server.address.substringAfter("://"),
+                    width = 170.dp,
+                    requester = if (server == vm.servers.first()) first else null
+                ) { vm.chooseServer(server) }
+            }
+            item {
+                ProfileTile(
+                    name = "Enter address",
+                    imageUrl = null,
+                    icon = R.drawable.ic_keyboard,
+                    width = 170.dp,
+                    requester = if (vm.servers.isEmpty()) first else null
+                ) { askAddress = true }
+            }
+            item {
+                ProfileTile(
+                    name = if (vm.findingServers) "Searching…" else "Search again",
+                    imageUrl = null,
+                    icon = R.drawable.ic_search,
+                    width = 170.dp
+                ) { vm.findServers() }
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        if (vm.busy) {
+            CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+        } else if (vm.message.isNotBlank()) {
+            Text(vm.message, style = TvType.body, color = Cream)
+        }
+    }
+    if (askAddress) {
+        TextEntryDialog(
+            "Server address",
+            vm.store.server,
+            "192.168.1.10:8096",
+            password = false,
+            note = "The address you open Jellyfin with in a browser. http:// and :8096 are added if you leave them out.",
+            onDismiss = { askAddress = false }
+        ) { typed ->
+            askAddress = false
+            vm.connectTo(typed)
+        }
+    }
+}
+
+@Composable
+private fun ProfileStep(vm: AppModel) {
     var passwordFor by remember { mutableStateOf<Profile?>(null) }
     var askUser by remember { mutableStateOf(false) }
     var manualName by remember { mutableStateOf("") }
-    var askServer by remember { mutableStateOf(false) }
     val first = remember { FocusRequester() }
     LaunchedEffect(vm.profilesLoaded, vm.profiles.size) {
         if (vm.profilesLoaded) {
@@ -253,6 +346,9 @@ private fun LoginScreen(vm: AppModel) {
                     requester = if (vm.profiles.isEmpty()) first else null
                 ) { askUser = true }
             }
+            item {
+                ProfileTile(name = "Quick Connect", imageUrl = null, icon = R.drawable.ic_phone) { vm.startQuickConnect() }
+            }
         }
         Spacer(Modifier.height(18.dp))
         if (vm.busy) {
@@ -262,8 +358,12 @@ private fun LoginScreen(vm: AppModel) {
         }
         Spacer(Modifier.height(24.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Server  ${vm.store.server}", style = TvType.small)
-            TvButton("Change") { askServer = true }
+            val address = vm.store.server.substringAfter("://")
+            Text(
+                "Server  " + if (vm.store.serverName.isBlank()) address else "${vm.store.serverName} · $address",
+                style = TvType.small
+            )
+            TvButton("Change server") { vm.changeServer() }
         }
     }
     passwordFor?.let { profile ->
@@ -285,17 +385,68 @@ private fun LoginScreen(vm: AppModel) {
             if (manualName.isNotEmpty()) passwordFor = Profile("", manualName, hasPassword = true, hasImage = false)
         }
     }
-    if (askServer) {
-        TextEntryDialog(
-            "Jellyfin server",
-            vm.store.server,
-            SessionStore.DEFAULT_SERVER,
-            password = false,
-            note = "For example 192.168.1.42:8096",
-            onDismiss = { askServer = false }
-        ) { url ->
-            askServer = false
-            vm.saveServer(url)
+}
+
+@Composable
+private fun QuickConnectDialog(vm: AppModel) {
+    val state = vm.quick
+    if (state == QuickState.Closed) return
+    Dialog(onDismissRequest = { vm.closeQuickConnect() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val action = remember { FocusRequester() }
+        LaunchedEffect(state::class) {
+            delay(60)
+            runCatching { action.requestFocus() }
+        }
+        Column(
+            Modifier
+                .width(520.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color(0xF2181A21))
+                .border(1.dp, Line, RoundedCornerShape(22.dp))
+                .padding(28.dp)
+        ) {
+            Text("Quick Connect", style = TvType.headline)
+            Spacer(Modifier.height(12.dp))
+            when (state) {
+                QuickState.Starting -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                    Text("Getting a code…", style = TvType.body)
+                }
+                is QuickState.Waiting -> {
+                    Text(
+                        "On your phone or computer, open Jellyfin while signed in, go to your profile, choose Quick Connect and enter this code.",
+                        style = TvType.body
+                    )
+                    Spacer(Modifier.height(18.dp))
+                    Text(
+                        state.code.chunked(3).joinToString(" "),
+                        style = TvType.display.copy(fontSize = 56.sp, lineHeight = 64.sp, letterSpacing = 6.sp),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        CircularProgressIndicator(color = Muted, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                        Text("Waiting for you to approve it. This TV signs in by itself.", style = TvType.small)
+                    }
+                }
+                QuickState.Off -> Text(
+                    "Quick Connect is switched off on this server. Someone with an admin account can turn it on in Jellyfin under Dashboard, General. Until then, sign in with a password.",
+                    style = TvType.body
+                )
+                is QuickState.Failed -> Text("${state.note} Try again for a new code, or sign in with a password.", style = TvType.body)
+                QuickState.Closed -> Unit
+            }
+            Spacer(Modifier.height(22.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (state is QuickState.Failed) {
+                    TvButton("Try again", primary = true, focusRequester = action) { vm.startQuickConnect() }
+                }
+                TvButton(
+                    if (state == QuickState.Off) "OK" else "Cancel",
+                    focusRequester = if (state is QuickState.Failed) null else action
+                ) { vm.closeQuickConnect() }
+            }
         }
     }
 }
@@ -305,6 +456,8 @@ private fun ProfileTile(
     name: String,
     imageUrl: String?,
     icon: Int? = null,
+    note: String = "",
+    width: Dp = 120.dp,
     requester: FocusRequester? = null,
     onClick: () -> Unit
 ) {
@@ -313,7 +466,7 @@ private fun ProfileTile(
     val size by animateDpAsState(if (focused) 108.dp else 96.dp, label = "profile")
     Column(
         Modifier
-            .width(120.dp)
+            .width(width)
             .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
             .clickable(interaction, indication = null, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -341,6 +494,9 @@ private fun ProfileTile(
         }
         Spacer(Modifier.height(10.dp))
         Text(name, style = TvType.title, color = if (focused) Cream else Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (note.isNotBlank()) {
+            Text(note, style = TvType.small, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
@@ -938,9 +1094,9 @@ private fun SettingsScreen(vm: AppModel) {
         }
         if (vm.osNote.isNotBlank()) item { Text(vm.osNote, style = TvType.small, modifier = Modifier.padding(start = 4.dp)) }
         item { Kicker("Account", Modifier.padding(top = 10.dp)) }
-        item { SettingRow("Server", vm.store.server) { askServer = true } }
+        item { SettingRow("Server", vm.store.serverName.ifBlank { vm.store.server.substringAfter("://") }) { askServer = true } }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Living Room TV 1.2 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Living Room TV 1.3 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(
@@ -967,16 +1123,15 @@ private fun SettingsScreen(vm: AppModel) {
         }
     }
     if (askServer) {
-        TextEntryDialog(
-            "Jellyfin server",
-            vm.store.server,
-            SessionStore.DEFAULT_SERVER,
-            password = false,
-            note = "Changing the server signs you out.",
+        PickerDialog(
+            "Change server? You'll be signed out.",
+            listOf("Choose another server", "Cancel"),
+            selected = -1,
             onDismiss = { askServer = false }
         ) {
             askServer = false
-            vm.saveServer(it)
+            if (it == 0) vm.changeServer()
         }
     }
+
 }
