@@ -2,16 +2,18 @@ name: Release
 
 # Publishes a signed APK on the Releases page whenever main has a version
 # (versionName in app/build.gradle.kts) that doesn't have a release yet.
+# On pull requests it does everything except publish, as a check.
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release
+  group: release-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
@@ -63,7 +65,7 @@ jobs:
           if echo "$signer" | grep -q 'CN=Android Debug'; then echo "APK is debug-signed"; exit 1; fi
           cp "$apk" "Snug-${{ steps.version.outputs.name }}.apk"
       - name: Publish release
-        if: steps.version.outputs.exists != 'true'
+        if: steps.version.outputs.exists != 'true' && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           NAME: ${{ steps.version.outputs.name }}
