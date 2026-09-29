@@ -8,7 +8,7 @@ Living Room installs beside the official Jellyfin app: its package is `tv.living
 
 **Browsing**
 - Profile picker, with password entry only for profiles that need one. The server address can be changed on the sign-in screen.
-- Home with a featured title and shelves: Continue watching, Recently added, and one per genre.
+- Home with a featured title and shelves: Continue watching, Unwatched, Favorites, the four biggest genres, and Recently added.
 - Full movie grid, genre tiles, and search with an on-screen keyboard.
 - Title page with resume and start-over, favourite and watched toggles, format badges, and subtitle and audio pickers.
 - A side rail for sections. Back always returns focus to the poster or button you came from.
@@ -48,9 +48,13 @@ adb connect <tv-address>:5555
 adb install -r LivingRoomTV.apk
 ```
 
+To try a build before it is released, open a pull request's run under **Actions → Build** and download the `LivingRoomTV` artifact (a zip with the APK inside). Those builds are signed with a different key from the release APK, so uninstall the app before switching between them.
+
 On the television, open **Living Room**, confirm the server address (for example `http://192.168.1.10:8096`), and choose a profile.
 
 Requirements: Android TV or Google TV on Android 7.0 (API 24) or newer, and a Jellyfin 10.10+ server on the local network. The app uses plain HTTP, which is intended for a home LAN.
+
+Current limits: only movie libraries are shown (no TV shows, music or Live TV yet), and the app loads up to 1,000 movies.
 
 ## Build from source
 
