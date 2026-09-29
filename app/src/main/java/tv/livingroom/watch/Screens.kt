@@ -603,6 +603,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                                         onFocus = {
                                             focusedId = movie.id
                                             focusedShelf = shelf.title
+                                            vm.hover(vm.screenFor(movie))
                                         }
                                     ) {
                                         vm.rememberFocus(key)
@@ -613,6 +614,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                                     item(key = "more") {
                                         TvButton("See all", Modifier.padding(top = 60.dp)) {
                                             vm.rememberFocus("home/${shelf.title}/more")
+                                            vm.seedGenre(shelf.genre, shelf.movies)
                                             vm.open(Screen.Genre(shelf.genre))
                                         }
                                     }
@@ -698,14 +700,15 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
         }
         gridItemsIndexed(items, key = { _, movie -> movie.id }) { index, movie ->
             // Ask for the next page while the last few rows are still off screen.
-            if (index >= items.size - 18) LaunchedEffect(items.size) { vm.loadMore(list) }
+            if (index >= items.size - 48) LaunchedEffect(items.size) { vm.loadMore(list) }
             val key = "$screenKey/${movie.id}"
             PosterCard(
                 movie,
                 vm.api.posterUrl(movie),
                 modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
                 width = null,
-                autoFocus = restore == key
+                autoFocus = restore == key,
+                onFocus = { vm.hover(vm.screenFor(movie)) }
             ) {
                 vm.rememberFocus(key)
                 vm.openItem(movie)
@@ -770,7 +773,13 @@ private fun SearchScreen(vm: AppModel) {
                 ) {
                     gridItems(results, key = { it.id }) { movie ->
                         val key = "search/${movie.id}"
-                        PosterCard(movie, vm.api.posterUrl(movie), width = null, autoFocus = restore == key) {
+                        PosterCard(
+                            movie,
+                            vm.api.posterUrl(movie),
+                            width = null,
+                            autoFocus = restore == key,
+                            onFocus = { vm.hover(vm.screenFor(movie)) }
+                        ) {
                             vm.rememberFocus(key)
                             vm.openItem(movie)
                         }
@@ -855,7 +864,8 @@ private fun GenresScreen(vm: AppModel) {
                 genre.count,
                 cover?.let { vm.api.imageUrl(it.id, "Backdrop", it.backdropTag, 640) },
                 requester = if (genre == groups.first()) first else null,
-                autoFocus = restore == key
+                autoFocus = restore == key,
+                onFocus = { vm.hover(Screen.Genre(genre.name)) }
             ) {
                 vm.rememberFocus(key)
                 vm.open(Screen.Genre(genre.name))
@@ -865,7 +875,15 @@ private fun GenresScreen(vm: AppModel) {
 }
 
 @Composable
-private fun GenreTile(name: String, count: Int, imageUrl: String?, requester: FocusRequester?, autoFocus: Boolean, onClick: () -> Unit) {
+private fun GenreTile(
+    name: String,
+    count: Int,
+    imageUrl: String?,
+    requester: FocusRequester?,
+    autoFocus: Boolean,
+    onFocus: () -> Unit,
+    onClick: () -> Unit
+) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val own = remember { FocusRequester() }
@@ -875,6 +893,7 @@ private fun GenreTile(name: String, count: Int, imageUrl: String?, requester: Fo
     Box(
         Modifier
             .focusRequester(target)
+            .onFocusChanged { if (it.isFocused) onFocus() }
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
             .graphicsLayer {
@@ -1017,7 +1036,7 @@ private fun DetailBody(
                     ) {
                         items(crew, key = { it.type + it.name }) { person ->
                             val label = if (person.type == "Director") "Director · ${person.name}" else person.name
-                            TvButton(label) {
+                            TvButton(label, onFocus = { vm.hover(Screen.Person(person.name, person.type)) }) {
                                 vm.rememberFocus("person/${person.name}")
                                 vm.open(Screen.Person(person.name, person.type))
                             }
@@ -1038,7 +1057,12 @@ private fun DetailBody(
                     ) {
                         items(similar, key = { it.id }) { other ->
                             val key = "${vm.screen.key}/similar/${other.id}"
-                            PosterCard(other, vm.api.imageUrl(other.id, "Primary", other.primaryTag, 360), autoFocus = restore == key) {
+                            PosterCard(
+                                other,
+                                vm.api.imageUrl(other.id, "Primary", other.primaryTag, 360),
+                                autoFocus = restore == key,
+                                onFocus = { vm.hover(Screen.Detail(other.id)) }
+                            ) {
                                 vm.rememberFocus(key)
                                 vm.open(Screen.Detail(other.id))
                             }
@@ -1290,7 +1314,7 @@ private fun SettingsScreen(vm: AppModel) {
         item { Kicker("Account", Modifier.padding(top = 10.dp)) }
         item { SettingRow("Server", vm.store.serverName.ifBlank { vm.store.server.substringAfter("://") }) { askServer = true } }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Living Room TV 1.5 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Living Room TV 1.7 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(

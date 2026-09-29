@@ -8,6 +8,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import coil.imageLoader
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -108,7 +111,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private val focusMemory = mutableMapOf<String, String>()
     private val listStates = mutableMapOf<String, LazyListState>()
     private val gridStates = mutableMapOf<String, LazyGridState>()
-    private val lists = mutableMapOf<String, MovieList>()
+    /** Grids stay cached so going back, or re-opening a genre, is instant. The oldest are dropped past a dozen. */
+    private val lists = object : LinkedHashMap<String, MovieList>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MovieList>?): Boolean =
+            size > 12 && eldest?.key != Screen.Movies.key
+    }
+    private val libraryPrefs = app.getSharedPreferences("livingroom-library", android.content.Context.MODE_PRIVATE)
+    private var hoverJob: Job? = null
     private val seen = mutableMapOf<String, Movie>()
     private var genreNames: List<String>? = null
     private var genreLoad: Deferred<List<GenreStat>?>? = null
@@ -210,6 +219,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 if (generation != list.generation) return@launch
                 keep(page.items)
                 val have = list.items.mapTo(HashSet()) { it.id }
+                if (have.isNotEmpty()) preloadPosters(page.items)
                 list.items = list.items + page.items.filter { it.id !in have }
                 // A short page means the server has nothing more, whatever the count said.
                 list.total = if (page.items.size < PAGE) list.items.size else maxOf(page.total, list.items.size)
@@ -226,6 +236,49 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 if (generation == list.generation) list.loading = false
             }
         }
+    }
+
+    /** Fetches posters for rows that are about to scroll in, so they're already there when they do. */
+    private fun preloadPosters(movies: List<Movie>) {
+        val context = getApplication<Application>()
+        for (movie in movies) {
+            val url = api.imageUrl(movie.id, "Primary", movie.primaryTag, 360) ?: continue
+            // Disk only: a few hundred decoded posters would push visible ones out of memory.
+            context.imageLoader.enqueue(ImageRequest.Builder(context).data(url).memoryCachePolicy(CachePolicy.DISABLED).build())
+        }
+    }
+
+    /**
+     * Called when a poster or a link to a grid has held focus for a moment, so the page it opens
+     * is usually ready by the time it's pressed.
+     */
+    fun hover(target: Screen) {
+        hoverJob?.cancel()
+        hoverJob = viewModelScope.launch {
+            delay(350)
+            when (target) {
+                is Screen.Detail -> prefetchDetail(target.id)
+                else -> listFor(target)?.let { if (!it.loaded) loadMore(it) }
+            }
+        }
+    }
+
+    private suspend fun prefetchDetail(id: String) {
+        if (id !in details) {
+            runCatching { withContext(Dispatchers.IO) { api.item(id) } }.onSuccess { details = details + (id to it) }
+        }
+        if (id !in similar) {
+            runCatching { withContext(Dispatchers.IO) { api.similar(id, 16) } }.onSuccess { found ->
+                keep(found)
+                similar = similar + (id to found)
+            }
+        }
+    }
+
+    /** Starts a genre grid with the posters its Home row already shows; both are in title order. */
+    fun seedGenre(name: String, movies: List<Movie>) {
+        val list = listFor(Screen.Genre(name)) ?: return
+        if (list.items.isEmpty() && !list.loading) list.items = movies
     }
 
     fun retry(list: MovieList) {
@@ -368,15 +421,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         if (root == Screen.Settings) loadOpenSubtitles()
     }
 
-    /** Opens whatever [item] is: a movie's page, a show's page, or an episode within its show. */
-    fun openItem(item: Movie) {
+    /** The page for [item]: a movie's page, a show's page, or an episode within its show. */
+    fun screenFor(item: Movie): Screen {
         val seriesId = item.seriesId
-        when {
-            item.isSeries -> open(Screen.Series(item.id))
-            item.isEpisode && seriesId != null -> open(Screen.Series(seriesId, item.id))
-            else -> open(Screen.Detail(item.id))
+        return when {
+            item.isSeries -> Screen.Series(item.id)
+            item.isEpisode && seriesId != null -> Screen.Series(seriesId, item.id)
+            else -> Screen.Detail(item.id)
         }
     }
+
+    fun openItem(item: Movie) = open(screenFor(item))
 
     fun open(next: Screen) {
         if (screen == next) return
@@ -384,7 +439,6 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         focusMemory.remove(next.key)
         listStates.keys.filter { it == next.key || it.startsWith(next.key + "/") }.forEach { listStates.remove(it) }
         gridStates.remove(next.key)
-        lists.remove(next.key)
         restoreKey = null
         screen = next
         if (next is Screen.Detail) loadDetail(next.id)
@@ -406,7 +460,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun refresh() {
         if (!store.signedIn) return
         loadHome()
-        lists.values.forEach { reload(it, keepSize = true) }
+        // Refresh the grids someone can go back to; forget the rest so they load fresh when opened.
+        val onStack = (backStack.toList() + screen).map { it.key }.toSet() + Screen.Movies.key
+        lists.keys.toList().forEach { key -> if (key !in onStack) lists.remove(key) }
+        lists.values.toList().forEach { reload(it, keepSize = true) }
         val open = (backStack.toList() + screen).filterIsInstance<Screen.Detail>().map { it.id }.toSet()
         details = details.filterKeys { it in open }
         similar = similar.filterKeys { it in open }
@@ -506,19 +563,19 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 }
                 rows.all().forEach { keep(it) }
                 libraryEmpty = rows.recent.total == 0 && rows.shows.isEmpty()
-                home = rows.feed(home?.shelves.orEmpty().filter { it.genre != null })
+                // Genre rows sit mid-page, so fill them in the same pass when we know last time's top genres.
+                // Adding them later would push the rows below down while someone is looking.
+                val known = home?.shelves.orEmpty().filter { it.genre != null }.ifEmpty {
+                    genreShelves(savedTopGenres(), fields)
+                }
+                home = rows.feed(known)
                 message = ""
                 busy = false
-                val top = genreStatsOrLoad()?.take(4) ?: return@launch
-                val genreShelves = withContext(Dispatchers.IO) {
-                    coroutineScope {
-                        top.map { genre ->
-                            async { Shelf(genre.name, api.movies(limit = 16, genre = genre.name, fields = fields, countTotal = false).items, genre.name) }
-                        }.awaitAll()
-                    }
-                }.filter { it.movies.isNotEmpty() }
-                genreShelves.forEach { keep(it.movies) }
-                home = rows.feed(genreShelves)
+                warmMovies()
+                val top = genreStatsOrLoad()?.take(4)?.map { it.name } ?: return@launch
+                saveTopGenres(top)
+                val fresh = genreShelves(top, fields)
+                if (fresh != known) home = rows.feed(fresh)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -531,6 +588,32 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 busy = false
             }
         }
+    }
+
+    private suspend fun genreShelves(names: List<String>, fields: String): List<Shelf> {
+        if (names.isEmpty()) return emptyList()
+        val shelves = withContext(Dispatchers.IO) {
+            coroutineScope {
+                names.map { name ->
+                    async { runCatching { Shelf(name, api.movies(limit = 16, genre = name, fields = fields, countTotal = false).items, name) }.getOrNull() }
+                }.awaitAll()
+            }
+        }.filterNotNull().filter { it.movies.isNotEmpty() }
+        shelves.forEach { keep(it.movies) }
+        return shelves
+    }
+
+    private fun savedTopGenres(): List<String> =
+        libraryPrefs.getString("topGenres:${store.userId}", null)?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
+
+    private fun saveTopGenres(names: List<String>) {
+        libraryPrefs.edit().putString("topGenres:${store.userId}", names.joinToString("\n")).apply()
+    }
+
+    /** Loads the first page of Movies in the background so opening it doesn't start from a spinner. */
+    private fun warmMovies() {
+        val list = listFor(Screen.Movies) ?: return
+        if (!list.loaded) loadMore(list)
     }
 
     private class HomeRows(

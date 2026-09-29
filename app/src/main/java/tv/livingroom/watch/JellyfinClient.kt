@@ -489,7 +489,7 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.5.0\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Living Room TV\", DeviceId=\"${store.deviceId}\", Version=\"1.7.0\"$token"
     }
 
     /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */
@@ -502,8 +502,8 @@ class JellyfinClient(
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     companion object {
-        /** Enough for a poster and the detail backdrop. Cast and plot load when a movie opens. */
-        const val GRID_FIELDS = "BackdropImageTags"
+        /** Enough for a poster and the top of the detail page. Cast and the rest load when a movie opens. */
+        const val GRID_FIELDS = "Overview,Genres,BackdropImageTags"
         const val HOME_FIELDS = "Overview,BackdropImageTags"
         private const val IMAGES = "&EnableImageTypes=Primary,Backdrop&ImageTypeLimit=1"
         const val OPEN_SUBTITLES = "4b9ed42f518548b598036ff2989014c4"
