@@ -1,6 +1,8 @@
 # Snug — Android TV
 
-A native Android TV client for [Jellyfin](https://jellyfin.org), built for the remote. Browse the movie library from the couch, pick up where you left off, and play 4K files straight from the server whenever the television can decode them.
+<p align="center"><img src="branding/snug-banner.png" alt="Snug" width="480"></p>
+
+A native Android TV client for [Jellyfin](https://jellyfin.org), built for the remote. Browse your movies and TV shows from the couch, pick up where you left off, and play 4K files straight from the server whenever the television can decode them.
 
 Snug installs beside the official Jellyfin app: its package is `tv.livingroom.watch`, not `org.jellyfin.androidtv`.
 
@@ -43,7 +45,7 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 
 ## Install
 
-Download `LivingRoomTV.apk` from the [latest release](https://github.com/neothebyte/living-room-tv/releases/latest), then sideload it:
+Download the APK (`LivingRoomTV.apk`, the file name from before the rename) from the [latest release](https://github.com/neothebyte/living-room-tv/releases/latest), then sideload it:
 
 ```bash
 adb connect <tv-address>:5555
@@ -56,7 +58,7 @@ On the television, open **Snug**, pick your server (or enter its address, for ex
 
 Requirements: Android TV or Google TV on Android 7.0 (API 24) or newer, and a Jellyfin 10.10+ server on the local network. The app uses plain HTTP, which is intended for a home LAN.
 
-Current limits: movies and TV shows are shown (no music or Live TV yet), and the app loads up to 1,000 movies.
+Current limits: movies and TV shows are shown (no music or Live TV yet). Large libraries load from the server a page at a time, so there is no size cap.
 
 ## Build from source
 
@@ -102,10 +104,14 @@ app/src/main/java/tv/livingroom/watch/
 
 ## Related
 
-- [Living Room — Web](https://github.com/neothebyte/living-room-web): the browser client for the same server.
+- [Living Room — Web](https://github.com/neothebyte/living-room-web): the browser client for the same server (not yet renamed).
 
 ## Acknowledgements
 
 - [Jellyfin](https://jellyfin.org) for the server and API.
 - [AndroidX Media3](https://github.com/androidx/media), [Jetpack Compose](https://developer.android.com/jetpack/compose), [OkHttp](https://square.github.io/okhttp/) and [Coil](https://coil-kt.github.io/coil/).
 - [Inter](https://rsms.me/inter/) typeface (SIL Open Font License).
+
+## Name and logo
+
+The app was called Living Room until version 1.8.1. The couch logo's sources are in `branding/` (`snug-icon.svg`, `snug-banner.svg`). The package id stays `tv.livingroom.watch`, so existing installs update in place.
