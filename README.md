@@ -8,21 +8,25 @@ Living Room installs beside the official Jellyfin app: its package is `tv.living
 
 **Browsing**
 - Profile picker, with password entry only for profiles that need one. The server address can be changed on the sign-in screen.
-- Home with a featured title and shelves: Continue watching, Recently added, and one per genre.
+- Home with a featured title and shelves: Continue watching, Unwatched, Favorites, the four biggest genres, and Recently added.
 - Full movie grid, genre tiles, and search with an on-screen keyboard.
 - Title page with resume and start-over, favourite and watched toggles, format badges, and subtitle and audio pickers.
 - A side rail for sections. Back always returns focus to the poster or button you came from.
 
 **Playback** (Media3 / ExoPlayer)
-- On start the app checks which decoders the television has and sends Jellyfin a matching device profile.
+- On start the app checks which hardware decoders the television has, and the largest picture each handles smoothly, and sends Jellyfin a matching device profile. A TV that can't play 4K HEVC or AV1 smoothly gets a converted stream instead of a stutter.
 - Files the television can decode — MKV and MP4, including 10-bit HEVC on TVs that support it — play directly with no work on the server.
 - If only the container or audio is unsupported, the server repackages the stream over HLS without re-encoding the picture. A full re-encode happens only when the television cannot decode the video, and is capped at 1080p.
+- If a file still fails, the player steps down one level at a time: repackage, then convert only the sound, and re-encode the picture only when the video decoder is the problem. A dropped connection is retried once first.
+- Dolby Vision files without an HDR10 fallback (profile 5) are converted on TVs without a Dolby Vision decoder, so they don't show purple and green.
+- The TV switches to a refresh rate matching the film (for example 23.976 Hz), so slow pans don't judder, and switches back when the player closes.
+- Up to about two minutes of video is buffered, and a Wi-Fi lock is held while playing, so high-bitrate files ride out Wi-Fi dips.
 - Resume position, skips, chapters, playback speed, and progress reported to Jellyfin.
 - Text subtitles are drawn by the app, so size and timing changes are instant. Image subtitles (PGS, DVD) use the television's decoder when playing directly.
 - Online subtitle search through the Jellyfin OpenSubtitles plugin.
 
 **Settings**
-- How long player controls stay up, subtitle size and preferred language, automatic subtitle downloads, the OpenSubtitles login, the server address, and sign out.
+- How long player controls stay up, frame-rate matching, subtitle size and preferred language, automatic subtitle downloads, the OpenSubtitles login, the server address, and sign out.
 
 ## Remote controls
 
@@ -44,9 +48,13 @@ adb connect <tv-address>:5555
 adb install -r LivingRoomTV.apk
 ```
 
+To try a build before it is released, open a pull request's run under **Actions → Build** and download the `LivingRoomTV` artifact (a zip with the APK inside). Those builds are signed with a different key from the release APK, so uninstall the app before switching between them.
+
 On the television, open **Living Room**, confirm the server address (for example `http://192.168.1.10:8096`), and choose a profile.
 
 Requirements: Android TV or Google TV on Android 7.0 (API 24) or newer, and a Jellyfin 10.10+ server on the local network. The app uses plain HTTP, which is intended for a home LAN.
+
+Current limits: only movie libraries are shown (no TV shows, music or Live TV yet), and the app loads up to 1,000 movies.
 
 ## Build from source
 
@@ -60,6 +68,8 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"   # or your SDK path
 
 The APK is written to `app/build/outputs/apk/release/app-release.apk`.
 
+GitHub also builds the APK for every push and pull request: open the run under **Actions → Build** and download the `LivingRoomTV` artifact.
+
 Release builds are currently signed with the Android debug key so they can be sideloaded without extra setup. To publish or share builds more widely, create a release keystore and add a `signingConfigs` block in `app/build.gradle.kts`; note that devices with a debug-signed build installed must uninstall it before installing one signed with a different key.
 
 ## Project layout
@@ -72,6 +82,7 @@ app/src/main/java/tv/livingroom/watch/
   Components.kt        Posters, rails, dialogs, focus styling
   PlayerActivity.kt    Media3 player, controls, panels, progress reporting
   DeviceCodecs.kt      Decoder probing and Jellyfin device profile
+  DisplayRate.kt       Refresh-rate matching for the player
   JellyfinClient.kt    Jellyfin REST client (OkHttp)
   AppModel.kt          State and actions
   SessionStore.kt      Saved server and session

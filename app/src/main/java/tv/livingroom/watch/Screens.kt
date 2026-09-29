@@ -902,6 +902,9 @@ private fun SettingsScreen(vm: AppModel) {
             }
         }
         item {
+            SettingRow("Match frame rate", if (vm.matchFrameRate) "On" else "Off") { vm.setFrameRateMatching(!vm.matchFrameRate) }
+        }
+        item {
             val current = cueNames.minByOrNull { kotlin.math.abs(it.first - vm.cueScale) }?.second ?: "Medium"
             SettingRow("Subtitle size", current) {
                 val at = cueNames.indexOfFirst { it.second == current }
@@ -925,7 +928,7 @@ private fun SettingsScreen(vm: AppModel) {
         item { Kicker("Account", Modifier.padding(top = 10.dp)) }
         item { SettingRow("Server", vm.store.server) { askServer = true } }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Living Room TV 1.1 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Living Room TV 1.2 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(

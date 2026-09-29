@@ -42,6 +42,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var cueScale by mutableStateOf(store.cueScale)
     var subtitleLanguage by mutableStateOf(store.subtitleLanguage)
     var autoSubtitles by mutableStateOf(store.autoSubtitles)
+    var matchFrameRate by mutableStateOf(store.matchFrameRate)
 
     private val backStack = ArrayDeque<Screen>()
     private val focusMemory = mutableMapOf<String, String>()
@@ -240,6 +241,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun setAutoSubs(on: Boolean) {
         autoSubtitles = on
         store.autoSubtitles = on
+    }
+
+    fun setFrameRateMatching(on: Boolean) {
+        matchFrameRate = on
+        store.matchFrameRate = on
     }
 
     fun loadOpenSubtitles() {
