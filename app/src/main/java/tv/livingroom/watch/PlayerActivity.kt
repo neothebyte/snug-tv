@@ -346,7 +346,7 @@ class PlayerActivity : ComponentActivity() {
             loading = true
             val previous = plan
             try {
-                val chosen = current.streams.find { it.type == "Subtitle" && it.index == subtitleIndex }
+                val chosen = textSubtitles(current.streams).find { it.index == subtitleIndex }
                 val bitmap = chosen != null && !chosen.isTextSubtitle()
                 var next = withContext(Dispatchers.IO) {
                     previous?.let { api.stopEncoding(it.playSessionId) }
@@ -369,7 +369,7 @@ class PlayerActivity : ComponentActivity() {
                 reportedStop = false
                 val streams = next.source.streams.ifEmpty { current.streams }
                 audioStreams = streams.filter { it.type == "Audio" }
-                subStreams = streams.filter { it.type == "Subtitle" }
+                subStreams = textSubtitles(streams)
                 selectedAudio = audioIndex ?: next.source.defaultAudioIndex ?: audioStreams.firstOrNull { it.isDefault }?.index
                 selectedSub = subtitleIndex
                 if (!displaySwitched) {
@@ -838,7 +838,7 @@ class PlayerActivity : ComponentActivity() {
         panel = null
         showControls()
         val current = movie ?: return
-        val stream = current.streams.find { it.type == "Subtitle" && it.index == index }
+        val stream = textSubtitles(current.streams).find { it.index == index }
         val currentPlan = plan
         subtitleIndex = index
         selectedSub = index
@@ -914,7 +914,7 @@ class PlayerActivity : ComponentActivity() {
                 withContext(Dispatchers.IO) { api.downloadSubtitle(current.id, hit.id) }
                 val fresh = withContext(Dispatchers.IO) { api.item(current.id) }
                 movie = fresh
-                subStreams = fresh.streams.filter { it.type == "Subtitle" }
+                subStreams = textSubtitles(fresh.streams)
                 val added = fresh.streams.lastOrNull { it.type == "Subtitle" && it.index !in before }?.index
                     ?: preferredSubtitleIndex(fresh.streams, store.subtitleLanguage)
                 subsChosen = true

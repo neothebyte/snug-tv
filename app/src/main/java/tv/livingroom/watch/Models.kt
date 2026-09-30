@@ -436,7 +436,7 @@ fun streamMatchesLanguage(stream: MediaStreamInfo, code: String): Boolean {
  * with no language or name, which would all read the same, so repeated labels get a number.
  */
 fun subtitleLabels(streams: List<MediaStreamInfo>): Map<Int, String> {
-    val subs = streams.filter { it.type == "Subtitle" }
+    val subs = textSubtitles(streams)
     val counts = subs.groupingBy { it.label() }.eachCount()
     val seen = mutableMapOf<String, Int>()
     return subs.associate { stream ->
@@ -452,8 +452,14 @@ fun subtitleLabels(streams: List<MediaStreamInfo>): Map<Int, String> {
 /** A run longer than this of unnamed subtitle tracks is folded behind one row in the picker. */
 const val FOLD_UNNAMED_SUBS = 3
 
+/**
+ * The subtitles Snug offers. Image subtitles (PGS, DVD) have to be burned into the picture whenever
+ * the Pi converts the video, and a 2 GB Pi can't do that for 4K without falling over, so they're left out.
+ */
+fun textSubtitles(streams: List<MediaStreamInfo>): List<MediaStreamInfo> = streams.filter { it.isTextSubtitle() }
+
 fun preferredSubtitleIndex(streams: List<MediaStreamInfo>, code: String): Int? {
-    val all = streams.filter { it.type == "Subtitle" }
+    val all = textSubtitles(streams)
     val inLanguage = all.filter { streamMatchesLanguage(it, code) && !it.isForced }
     val pick = inLanguage.firstOrNull { it.isTextSubtitle() }
         ?: inLanguage.firstOrNull()
