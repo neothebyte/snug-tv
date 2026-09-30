@@ -204,7 +204,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun buildPlayer(): ExoPlayer {
         val dataSource = DefaultHttpDataSource.Factory()
-            .setUserAgent("SnugTV/1.10.0")
+            .setUserAgent("SnugTV/1.12.0")
             .setDefaultRequestProperties(mapOf("X-Emby-Token" to store.token.orEmpty()))
             .setConnectTimeoutMs(20_000)
             .setReadTimeoutMs(60_000)
