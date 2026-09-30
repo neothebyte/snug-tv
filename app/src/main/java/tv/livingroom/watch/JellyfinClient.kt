@@ -188,6 +188,21 @@ class JellyfinClient(
         return parseItems(json).getOrNull(1)?.takeIf { it.id != episode.id }
     }
 
+    /** Intro and credits times for [itemId] (Jellyfin 10.10+, filled in by a plugin such as Intro Skipper). */
+    fun segments(itemId: String): List<MediaSegment> {
+        val json = JSONObject(call("GET", "/MediaSegments/${encode(itemId)}"))
+        val array = json.optJSONArray("Items") ?: JSONArray()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val entry = array.optJSONObject(i) ?: continue
+                val start = entry.optLong("StartTicks", -1L)
+                val end = entry.optLong("EndTicks", -1L)
+                if (start < 0 || end <= start) continue
+                add(MediaSegment(entry.optString("Type"), start / 10_000L, end / 10_000L))
+            }
+        }
+    }
+
     /** A poster for [item]: episodes use their show's, since their own picture is a wide still. */
     fun posterUrl(item: Movie, width: Int = 360): String? =
         if (item.isEpisode && item.seriesId != null && item.seriesPrimaryTag != null) {
@@ -489,7 +504,7 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.8.1\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.9.0\"$token"
     }
 
     /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */

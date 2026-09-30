@@ -35,6 +35,9 @@ data class PersonCredit(val name: String, val type: String)
 
 data class ChapterMark(val name: String, val startTicks: Long)
 
+/** A stretch of an episode such as its "Intro" or "Outro" (credits), in milliseconds. */
+data class MediaSegment(val type: String, val startMs: Long, val endMs: Long)
+
 data class MediaStreamInfo(
     val index: Int,
     val type: String,

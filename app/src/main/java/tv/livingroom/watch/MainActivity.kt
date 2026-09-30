@@ -1,12 +1,18 @@
 package tv.livingroom.watch
 
 import android.os.Bundle
+import android.view.Choreographer
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
+    /** True from a held arrow's move until the screen has drawn a frame with it. */
+    private var moveOnScreen = false
+    private val choreographer by lazy { Choreographer.getInstance() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -16,5 +22,30 @@ class MainActivity : ComponentActivity() {
                 WatchApp(model)
             }
         }
+    }
+
+    /**
+     * A held arrow repeats about 20 times a second, faster than a TV box can draw a moving grid.
+     * The extra presses queue up, so the grid lags behind and keeps moving after the button is
+     * let go. Repeats that arrive before the last move has been drawn are dropped instead, so
+     * fast TVs scroll at full speed and slow ones stay in step with the remote.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode in ARROWS && event.repeatCount > 0) {
+            if (moveOnScreen) return true
+            moveOnScreen = true
+            // The first callback runs as the next frame starts; the second once that frame is drawn.
+            choreographer.postFrameCallback { choreographer.postFrameCallback { moveOnScreen = false } }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private companion object {
+        val ARROWS = setOf(
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT
+        )
     }
 }

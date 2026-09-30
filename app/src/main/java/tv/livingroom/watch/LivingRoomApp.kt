@@ -41,7 +41,9 @@ class LivingRoomApp : Application() {
         Coil.setImageLoader(
             ImageLoader.Builder(this)
                 .okHttpClient(http)
-                .crossfade(180)
+                // No fade by default: fading every poster in while a grid scrolls costs frames on
+                // weak TV boxes. The big backdrop still fades (see FullBackdrop).
+                .crossfade(false)
                 .build()
         )
     }

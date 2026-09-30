@@ -88,11 +88,16 @@ fun WatchApp(vm: AppModel) {
         vm.refresh()
     }
     val play: (String, Boolean) -> Unit = { id, fromStart ->
+        // The artwork and name the player shows while it starts. Same picture as the backdrop
+        // behind Home and the detail page, so it's usually already loaded.
+        val item = vm.movieFor(id)
         launcher.launch(
             Intent(context, PlayerActivity::class.java)
                 .putExtra(PlayerActivity.EXTRA_ID, id)
                 .putExtra(PlayerActivity.EXTRA_FROM_START, fromStart)
                 .putExtra(PlayerActivity.EXTRA_LIBRARY_EMPTY, vm.libraryEmpty)
+                .putExtra(PlayerActivity.EXTRA_ART, item?.let { vm.api.backdropUrl(it, 1280) })
+                .putExtra(PlayerActivity.EXTRA_HEADLINE, item?.name)
         )
     }
     val api = vm.api
@@ -103,7 +108,8 @@ fun WatchApp(vm: AppModel) {
         is Screen.Series -> vm.shows[screen.id]?.series
         else -> null
     }
-    val shot = backdropMovie?.let { api.backdropUrl(it, 1920) }
+    // 1280 wide is plenty under the dark gradients, and less than half the pixels of 1920 to decode and upload.
+    val shot = backdropMovie?.let { api.backdropUrl(it, 1280) }
     Box(Modifier.fillMaxSize().background(Ink)) {
         FullBackdrop(shot, strong = screen is Screen.Detail || screen is Screen.Series)
         if (screen is Screen.Login) {
@@ -1321,7 +1327,7 @@ private fun SettingsScreen(vm: AppModel) {
         item { Kicker("Account", Modifier.padding(top = 10.dp)) }
         item { SettingRow("Server", vm.store.serverName.ifBlank { vm.store.server.substringAfter("://") }) { askServer = true } }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Snug 1.8.1 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Snug 1.9.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(
