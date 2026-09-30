@@ -110,7 +110,6 @@ class PlayerActivity : ComponentActivity() {
     private var plan: PlaybackPlan? = null
     private var subtitleIndex: Int? = null
     private var audioIndex: Int? = null
-    private var subsChosen = false
     private var sentStart = false
     private var reportedStop = false
     /** The least server work this title has played with; a failure only ever moves it down the list. */
@@ -348,28 +347,20 @@ class PlayerActivity : ComponentActivity() {
             try {
                 val chosen = current.streams.find { it.type == "Subtitle" && it.index == subtitleIndex }
                 val bitmap = chosen != null && !chosen.isTextSubtitle()
-                var next = withContext(Dispatchers.IO) {
+                val next = withContext(Dispatchers.IO) {
                     previous?.let { api.stopEncoding(it.playSessionId) }
                     api.playback(current.id, atTicks, audioIndex, chosen?.takeIf { !bitmap }?.index, burn = false, mode = mode)
                 }
-                if (bitmap && next.hls) {
-                    if (subsChosen) {
-                        loadingNote = "Adding subtitles to the picture…"
-                        next = withContext(Dispatchers.IO) {
-                            api.stopEncoding(next.playSessionId)
-                            api.playback(current.id, atTicks, audioIndex, chosen!!.index, burn = true, mode = PlayMode.Transcode)
-                        }
-                    } else {
-                        subtitleIndex = null
-                    }
-                }
+                // When the video comes through the Pi, image subtitles could only be burned into the
+                // picture there, and the Pi can't handle that. Only the box can draw them, on direct play.
+                if (bitmap && next.hls) subtitleIndex = null
                 if (previous != null && previous.playSessionId != next.playSessionId) reportStopFor(previous)
                 plan = next
                 sentStart = false
                 reportedStop = false
                 val streams = next.source.streams.ifEmpty { current.streams }
                 audioStreams = streams.filter { it.type == "Audio" }
-                subStreams = streams.filter { it.type == "Subtitle" }
+                subStreams = streams.filter { it.type == "Subtitle" && (!next.hls || it.isTextSubtitle()) }
                 selectedAudio = audioIndex ?: next.source.defaultAudioIndex ?: audioStreams.firstOrNull { it.isDefault }?.index
                 selectedSub = subtitleIndex
                 if (!displaySwitched) {
@@ -663,7 +654,6 @@ class PlayerActivity : ComponentActivity() {
         retriedNetwork = false
         subtitleIndex = null
         audioIndex = null
-        subsChosen = false
         pendingTextTrack = null
         pendingAudioTrack = null
         subtitleJob?.cancel()
@@ -834,7 +824,6 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun chooseSubtitle(index: Int?) {
-        subsChosen = true
         panel = null
         showControls()
         val current = movie ?: return
@@ -914,10 +903,9 @@ class PlayerActivity : ComponentActivity() {
                 withContext(Dispatchers.IO) { api.downloadSubtitle(current.id, hit.id) }
                 val fresh = withContext(Dispatchers.IO) { api.item(current.id) }
                 movie = fresh
-                subStreams = fresh.streams.filter { it.type == "Subtitle" }
+                subStreams = fresh.streams.filter { it.type == "Subtitle" && (plan?.hls != true || it.isTextSubtitle()) }
                 val added = fresh.streams.lastOrNull { it.type == "Subtitle" && it.index !in before }?.index
                     ?: preferredSubtitleIndex(fresh.streams, store.subtitleLanguage)
-                subsChosen = true
                 subtitleIndex = added
                 selectedSub = added
                 panel = null
@@ -1367,11 +1355,7 @@ class PlayerActivity : ComponentActivity() {
             val unnamed = subStreams.filter { it.isUnnamedSubtitle() }
             val fold = !showAllSubs && unnamed.size > FOLD_UNNAMED_SUBS && unnamed.none { it.index == selectedSub }
             subStreams.filter { !fold || !it.isUnnamedSubtitle() }.forEach { stream ->
-                val detail = when {
-                    stream.isTextSubtitle() -> ""
-                    plan?.hls == true -> "Image subtitles · slower to start"
-                    else -> "Image subtitles"
-                }
+                val detail = if (stream.isTextSubtitle()) "" else "Image subtitles"
                 add(PanelItem(labels[stream.index] ?: stream.label(), detail, selectedSub == stream.index) { chooseSubtitle(stream.index) })
             }
             if (fold) add(PanelItem("Show ${unnamed.size} more tracks", "No language set in the file") { showAllSubs = true })
