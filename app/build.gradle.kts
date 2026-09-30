@@ -13,7 +13,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 14
-        versionName = "1.12.0"
+        versionName = "1.11.0"
     }
 
     // Release key: from ~/.gradle/gradle.properties locally, or environment variables in CI.

@@ -1365,7 +1365,7 @@ private fun SettingsScreen(vm: AppModel) {
             Text("Jellyfin calls this server \u201c${vm.store.serverName}\u201d.", style = TvType.small, modifier = Modifier.padding(start = 4.dp))
         }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Snug 1.12.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Snug 1.11.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(
