@@ -162,6 +162,7 @@ fun WatchApp(vm: AppModel) {
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             )
         }
+        Screensaver(vm)
     }
 }
 
@@ -943,6 +944,7 @@ private fun DetailScreen(vm: AppModel, id: String, play: (String, Boolean) -> Un
     val playFocus = remember { FocusRequester() }
     DefaultFocus(vm, restore, playFocus)
     val similar = vm.similar[movie.id].orEmpty()
+    ThemeMusic(vm, movie.id)
     val crew = remember(movie) {
         movie.people.filter { it.type == "Director" } +
             movie.people.filter { it.type == "Actor" }.take(14) +
@@ -1104,6 +1106,7 @@ private fun SeriesScreen(vm: AppModel, screen: Screen.Series, play: (String, Boo
     if (landing == null) DefaultFocus(vm, restore, playFocus)
     val series = view.series
     val episodes = view.selected?.let { view.episodes[it] }
+    ThemeMusic(vm, series.id)
     CompositionLocalProvider(LocalBringIntoViewSpec provides MinimalScroll) {
         LazyColumn(
             state = vm.listState(screen.key),
@@ -1147,6 +1150,15 @@ private fun SeriesScreen(vm: AppModel, screen: Screen.Series, play: (String, Boo
                         TvButton(if (series.favorite) "In favorites" else "Favorite", icon = R.drawable.ic_heart, selected = series.favorite) {
                             vm.toggleFavorite(series)
                         }
+                        val hidden = series.id in vm.hiddenShows
+                        if (hidden || vm.inContinue(series.id)) {
+                            TvButton(if (hidden) "Hidden from Continue" else "Hide from Continue", icon = R.drawable.ic_hide, selected = hidden) {
+                                vm.toggleHidden(series.id)
+                            }
+                        }
+                    }
+                    if (series.id in vm.hiddenShows) {
+                        Text("Comes back to Continue watching when you next play an episode.", style = TvType.small, modifier = Modifier.padding(top = 8.dp))
                     }
                     if (vm.message.isNotBlank()) Text(vm.message, style = TvType.body, color = Cream, modifier = Modifier.padding(top = 10.dp))
                 }
@@ -1304,6 +1316,28 @@ private fun SettingsScreen(vm: AppModel) {
             SettingRow("Match frame rate", if (vm.matchFrameRate) "On" else "Off") { vm.setFrameRateMatching(!vm.matchFrameRate) }
         }
         item {
+            SettingRow("Jump back when resuming", if (vm.resumeBackSeconds == 0) "Off" else "${vm.resumeBackSeconds} seconds") {
+                val options = listOf(0, 5, 10)
+                vm.setResumeBack(options[(options.indexOf(vm.resumeBackSeconds) + 1) % options.size])
+            }
+        }
+        item {
+            SettingRow("Ask if you're still watching", if (vm.stillWatchingAfter == 0) "Never" else "After ${vm.stillWatchingAfter} episodes") {
+                val options = listOf(2, 3, 5, 0)
+                vm.setStillWatching(options[(options.indexOf(vm.stillWatchingAfter) + 1) % options.size])
+            }
+        }
+        item { Kicker("Menus", Modifier.padding(top = 10.dp)) }
+        item {
+            SettingRow("Screensaver", if (vm.screensaverMinutes == 0) "Off" else "After ${vm.screensaverMinutes} minutes") {
+                val options = listOf(2, 5, 10, 0)
+                vm.setScreensaver(options[(options.indexOf(vm.screensaverMinutes) + 1) % options.size])
+            }
+        }
+        item {
+            SettingRow("Theme music on show pages", if (vm.themeMusic) "On" else "Off") { vm.toggleThemeMusic() }
+        }
+        item {
             val current = cueNames.minByOrNull { kotlin.math.abs(it.first - vm.cueScale) }?.second ?: "Medium"
             SettingRow("Subtitle size", current) {
                 val at = cueNames.indexOfFirst { it.second == current }
@@ -1327,7 +1361,7 @@ private fun SettingsScreen(vm: AppModel) {
         item { Kicker("Account", Modifier.padding(top = 10.dp)) }
         item { SettingRow("Server", vm.store.serverName.ifBlank { vm.store.server.substringAfter("://") }) { askServer = true } }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Snug 1.9.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Snug 1.10.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(

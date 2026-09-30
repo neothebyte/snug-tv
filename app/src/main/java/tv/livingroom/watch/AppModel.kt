@@ -103,6 +103,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var subtitleLanguage by mutableStateOf(store.subtitleLanguage)
     var autoSubtitles by mutableStateOf(store.autoSubtitles)
     var matchFrameRate by mutableStateOf(store.matchFrameRate)
+    var resumeBackSeconds by mutableStateOf(store.resumeBackSeconds)
+    var stillWatchingAfter by mutableStateOf(store.stillWatchingAfter)
+    var themeMusic by mutableStateOf(store.themeMusic)
+    var screensaverMinutes by mutableStateOf(store.screensaverMinutes)
+    /** Shows hidden from Continue watching, shared with the web version through the server. */
+    var hiddenShows by mutableStateOf<Set<String>>(emptySet())
+        private set
+    /** The screensaver is up; the next key press only puts it away. */
+    var saverOn by mutableStateOf(false)
+    /** When the remote was last pressed, in [android.os.SystemClock.uptimeMillis] time. */
+    var lastInput = android.os.SystemClock.uptimeMillis()
 
     private val backStack = ArrayDeque<Screen>()
     private val focusMemory = mutableMapOf<String, String>()
@@ -544,10 +555,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                         }
                         val favorites = async { api.movies(limit = 16, filters = "IsFavorite", fields = fields, countTotal = false).items }
                         val recent = async { api.movies(limit = 18, sortBy = "DateCreated,SortName", sortOrder = "Descending", fields = fields) }
-                        HomeRows(resume.await(), nextUp.await(), unwatched.await(), favorites.await(), recent.await(), newShows.await())
+                        val hidden = async { runCatching { api.hiddenShows() }.getOrDefault(hiddenShows) }
+                        HomeRows(resume.await(), nextUp.await(), unwatched.await(), favorites.await(), recent.await(), newShows.await(), hidden.await())
                     }
                 }
                 rows.all().forEach { keep(it) }
+                hiddenShows = rows.hidden
                 libraryEmpty = rows.recent.total == 0 && rows.shows.isEmpty()
                 // Genre rows sit mid-page, so fill them in the same pass when we know last time's top genres.
                 // Adding them later would push the rows below down while someone is looking.
@@ -608,23 +621,39 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val unwatched: List<Movie>,
         val favorites: List<Movie>,
         val recent: MoviePage,
-        val shows: List<Movie>
+        val shows: List<Movie>,
+        val hidden: Set<String>
     ) {
         fun all() = listOf(resume, nextUp, unwatched, favorites, recent.items, shows)
 
+        /**
+         * Titles stopped part-way and the next episode of each show, in one row, most recently watched
+         * first. A next episode that hasn't been started takes the time of the one before it, since the
+         * server already lists Next up by when each show was last watched.
+         */
+        private fun continuing(): List<Movie> {
+            val started = resume.mapTo(HashSet()) { it.id }
+            var carried = Long.MAX_VALUE
+            val episodes = nextUp.filter { it.id !in started && it.seriesId !in hidden }.map { episode ->
+                val at = episode.lastPlayed.takeIf { it > 0L } ?: carried
+                carried = at
+                episode to at
+            }
+            val stopped = resume.filter { !(it.isEpisode && it.seriesId in hidden) }.map { it to it.lastPlayed }
+            return (episodes + stopped).sortedByDescending { it.second }.map { it.first }
+        }
+
         fun feed(genres: List<Shelf>): HomeFeed {
+            val continueRow = continuing()
             val shelves = buildList {
-                if (resume.isNotEmpty()) add(Shelf("Continue watching", resume))
-                // Episodes already in Continue watching don't need to show twice.
-                val started = resume.mapTo(HashSet()) { it.id }
-                nextUp.filter { it.id !in started }.takeIf { it.isNotEmpty() }?.let { add(Shelf("Next up", it)) }
+                if (continueRow.isNotEmpty()) add(Shelf("Continue watching", continueRow))
                 if (unwatched.isNotEmpty()) add(Shelf("Unwatched", unwatched))
                 if (favorites.isNotEmpty()) add(Shelf("Favorites", favorites))
                 addAll(genres)
                 if (recent.items.isNotEmpty()) add(Shelf("Recently added", recent.items))
                 if (shows.isNotEmpty()) add(Shelf("TV shows with new episodes", shows))
             }
-            return HomeFeed(resume.firstOrNull() ?: recent.items.firstOrNull(), resume.isNotEmpty(), shelves)
+            return HomeFeed(continueRow.firstOrNull() ?: recent.items.firstOrNull(), continueRow.isNotEmpty(), shelves)
         }
     }
 
@@ -810,6 +839,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         lists.clear()
         seen.clear()
         details = emptyMap()
+        hiddenShows = emptySet()
+        saverOn = false
         query = ""
         backStack.clear()
         focusMemory.clear()
@@ -837,6 +868,46 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         autoSubtitles = on
         store.autoSubtitles = on
     }
+
+    fun setResumeBack(seconds: Int) {
+        resumeBackSeconds = seconds
+        store.resumeBackSeconds = seconds
+    }
+
+    fun setStillWatching(episodes: Int) {
+        stillWatchingAfter = episodes
+        store.stillWatchingAfter = episodes
+    }
+
+    fun toggleThemeMusic() {
+        themeMusic = !themeMusic
+        store.themeMusic = themeMusic
+    }
+
+    fun setScreensaver(minutes: Int) {
+        screensaverMinutes = minutes
+        store.screensaverMinutes = minutes
+    }
+
+    /** True when [seriesId] has an episode in Continue watching, so hiding it would change something. */
+    fun inContinue(seriesId: String): Boolean =
+        home?.shelves?.firstOrNull { it.title == "Continue watching" }?.movies?.any { it.seriesId == seriesId } == true
+
+    fun toggleHidden(seriesId: String) {
+        val hide = seriesId !in hiddenShows
+        viewModelScope.launch {
+            try {
+                hiddenShows = withContext(Dispatchers.IO) { api.setShowHidden(seriesId, hide) }
+                loadHome()
+            } catch (_: Exception) {
+                message = "That change didn't save."
+            }
+        }
+    }
+
+    /** Backdrops the screensaver fades between: whatever Home already has, in a shuffled order. */
+    fun saverPictures(): List<Movie> =
+        home?.shelves.orEmpty().flatMap { it.movies }.filter { it.backdropTag != null }.distinctBy { it.backdropOwner ?: it.id }.shuffled()
 
     fun setFrameRateMatching(on: Boolean) {
         matchFrameRate = on

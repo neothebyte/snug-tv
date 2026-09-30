@@ -11,7 +11,9 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 **Browsing**
 - Finds Jellyfin servers on the home network by itself, or takes a typed address (`http://` and `:8096` are filled in when left out).
 - Profile picker, with password entry only for profiles that need one, plus Quick Connect: the TV shows a code you approve from the Jellyfin app on your phone.
-- Home with a featured title and shelves: Continue watching (movies and episodes), Next up, Unwatched, Favorites, the four biggest genres, Recently added, and TV shows with new episodes.
+- Home with a featured title and shelves: Continue watching (titles stopped part-way and the next episode of each show, in one row), Unwatched, Favorites, the four biggest genres, Recently added, and TV shows with new episodes.
+- A show can be hidden from Continue watching from its page; it comes back when you next play an episode. The list is kept on the server, so the web version shares it.
+- An optional screensaver fades through the library's backdrops with the time after a few idle minutes on a menu, and optional theme music plays softly on show and movie pages.
 - Full movie grid, genre tiles, and search with an on-screen keyboard.
 - TV shows: a grid of shows, and a page per show with a Play or Resume button for the next episode, seasons as tabs, and the episode list with progress and watched marks. When an episode ends, the next one starts after a 10-second countdown.
 - Title page with resume and start-over, favourite and watched toggles, format badges, and subtitle and audio pickers.
@@ -25,12 +27,15 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 - Dolby Vision files without an HDR10 fallback (profile 5) are converted on TVs without a Dolby Vision decoder, so they don't show purple and green.
 - The TV switches to a refresh rate matching the film (for example 23.976 Hz), so slow pans don't judder, and switches back when the player closes.
 - Up to about two minutes of video is buffered, and a Wi-Fi lock is held while playing, so high-bitrate files ride out Wi-Fi dips.
-- Resume position, skips, chapters, playback speed, and progress reported to Jellyfin.
+- Resume position (a few seconds early, so you catch the line you missed), skips, chapters, playback speed, and progress reported to Jellyfin.
+- Skip intro, Skip recap and Skip preview buttons when the server has marked those parts (for example with the Intro Skipper plugin), and an Up next card as the credits start.
+- After a few episodes in a row with nobody touching the remote, the Up next card asks whether you're still watching, and playback stops at the credits unless you answer.
+- A Playback info panel (the Info button, or the remote's Info key) says whether the video is playing straight from the drive, repackaged or converted by the server and why, which decoder the TV is using, the screen's refresh rate, dropped frames and how much is loaded ahead.
 - Text subtitles are drawn by the app, so size and timing changes are instant. Image subtitles (PGS, DVD) use the television's decoder when playing directly.
 - Online subtitle search through the Jellyfin OpenSubtitles plugin.
 
 **Settings**
-- How long player controls stay up, frame-rate matching, subtitle size and preferred language, automatic subtitle downloads, the OpenSubtitles login, changing server, and sign out.
+- How long player controls stay up, frame-rate matching, how far to jump back when resuming, when to ask if you're still watching, the screensaver and theme music, subtitle size and preferred language, automatic subtitle downloads, the OpenSubtitles login, changing server, and sign out.
 
 ## Remote controls
 
@@ -40,6 +45,7 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 | Left / Right | Skip 10 s (hold for 30 s) |
 | Fast-forward / Rewind | Skip forward / back |
 | Up / Down / Menu | Show controls |
+| Info | Playback info |
 | Captions | Subtitle options |
 | Back | Close a panel, then hide the controls, then leave the player |
 
@@ -93,6 +99,7 @@ app/src/main/java/tv/livingroom/watch/
   Screens.kt           Sign-in, Home, grid, search, genres, detail, settings
   Components.kt        Posters, rails, dialogs, focus styling
   PlayerActivity.kt    Media3 player, controls, panels, progress reporting
+  Extras.kt            Screensaver and theme music
   DeviceCodecs.kt      Decoder probing and Jellyfin device profile
   DisplayRate.kt       Refresh-rate matching for the player
   JellyfinClient.kt    Jellyfin REST client (OkHttp)

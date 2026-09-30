@@ -323,6 +323,45 @@ class JellyfinClient(
         call(if (on) "DELETE" else "POST", "/Users/$userId/PlayedItems/$itemId", if (on) null else JSONObject())
     }
 
+    /**
+     * Shows hidden from Continue watching. They live in Jellyfin's per-user display preferences,
+     * under the same name the web version uses, so both apps share one list.
+     */
+    fun hiddenShows(): Set<String> =
+        displayPrefs().optJSONObject("CustomPrefs")?.optString("hiddenShows").orEmpty()
+            .split(',').filter { it.isNotBlank() }.toSet()
+
+    /** Hides or shows [seriesId] in Continue watching, and returns the new list. */
+    fun setShowHidden(seriesId: String, hide: Boolean): Set<String> {
+        val prefs = displayPrefs()
+        val custom = prefs.optJSONObject("CustomPrefs") ?: JSONObject()
+        val before = custom.optString("hiddenShows").split(',').filter { it.isNotBlank() }.toSet()
+        val after = if (hide) before + seriesId else before - seriesId
+        if (after == before) return after
+        custom.put("hiddenShows", after.joinToString(","))
+        prefs.put("CustomPrefs", custom)
+        if (prefs.optString("Id").isBlank()) prefs.put("Id", "snug")
+        prefs.put("Client", "snug")
+        call("POST", displayPrefsPath(), prefs)
+        return after
+    }
+
+    private fun displayPrefs(): JSONObject = JSONObject(call("GET", displayPrefsPath()).ifBlank { "{}" })
+
+    private fun displayPrefsPath(): String {
+        val userId = store.userId ?: error("Sign in again.")
+        return "/DisplayPreferences/snug?userId=$userId&client=snug"
+    }
+
+    /** Where to stream [ownerId]'s theme song from, or null when the library has none for it. */
+    fun themeSongUrl(ownerId: String): String? {
+        val userId = store.userId ?: return null
+        val json = JSONObject(call("GET", "/Items/${encode(ownerId)}/ThemeSongs?userId=$userId&inheritFromParent=true"))
+        val song = json.optJSONArray("Items")?.optJSONObject(0)?.optString("Id")?.takeIf { it.isNotBlank() } ?: return null
+        val key = URLEncoder.encode(store.token.orEmpty(), "UTF-8")
+        return "${base()}/Audio/${encode(song)}/stream?static=true&api_key=$key"
+    }
+
     fun remoteSubtitles(itemId: String, language: String): List<RemoteSubtitle> {
         val config = pluginConfig()
         if (config != null && config.optString("Username").isBlank()) {
@@ -504,7 +543,7 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.9.0\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.10.0\"$token"
     }
 
     /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */
