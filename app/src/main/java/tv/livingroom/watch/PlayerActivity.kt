@@ -147,6 +147,7 @@ class PlayerActivity : ComponentActivity() {
     private var subStreams by mutableStateOf<List<MediaStreamInfo>>(emptyList())
     private var selectedSub by mutableStateOf<Int?>(null)
     private var selectedAudio by mutableStateOf<Int?>(null)
+    private var showAllSubs by mutableStateOf(false)
     private var remoteHits by mutableStateOf<List<RemoteSubtitle>>(emptyList())
     private var remoteNote by mutableStateOf("")
     /** The episode offered in the Up next card; null while the card isn't showing. */
@@ -1362,14 +1363,18 @@ class PlayerActivity : ComponentActivity() {
     private fun panelRows(which: Panel): List<PanelItem> = when (which) {
         Panel.Subtitles -> buildList {
             add(PanelItem("Off", selected = selectedSub == null) { chooseSubtitle(null) })
-            subStreams.forEach { stream ->
+            val labels = subtitleLabels(subStreams)
+            val unnamed = subStreams.filter { it.isUnnamedSubtitle() }
+            val fold = !showAllSubs && unnamed.size > FOLD_UNNAMED_SUBS && unnamed.none { it.index == selectedSub }
+            subStreams.filter { !fold || !it.isUnnamedSubtitle() }.forEach { stream ->
                 val detail = when {
                     stream.isTextSubtitle() -> ""
                     plan?.hls == true -> "Image subtitles · slower to start"
                     else -> "Image subtitles"
                 }
-                add(PanelItem(stream.label(), detail, selectedSub == stream.index) { chooseSubtitle(stream.index) })
+                add(PanelItem(labels[stream.index] ?: stream.label(), detail, selectedSub == stream.index) { chooseSubtitle(stream.index) })
             }
+            if (fold) add(PanelItem("Show ${unnamed.size} more tracks", "No language set in the file") { showAllSubs = true })
             if (cues.isNotEmpty()) {
                 add(PanelItem("Show earlier", "Now ${delayText(cueDelayMs)}") { cueDelayMs -= 250; stamp++ })
                 add(PanelItem("Show later", "Now ${delayText(cueDelayMs)}") { cueDelayMs += 250; stamp++ })
