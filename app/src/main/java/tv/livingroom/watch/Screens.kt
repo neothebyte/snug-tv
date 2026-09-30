@@ -1359,9 +1359,13 @@ private fun SettingsScreen(vm: AppModel) {
         }
         if (vm.osNote.isNotBlank()) item { Text(vm.osNote, style = TvType.small, modifier = Modifier.padding(start = 4.dp)) }
         item { Kicker("Account", Modifier.padding(top = 10.dp)) }
-        item { SettingRow("Server", vm.store.serverName.ifBlank { vm.store.server.substringAfter("://") }) { askServer = true } }
+        // The address, not only the server's name, so it's clear which one Snug is talking to.
+        item { SettingRow("Server", vm.store.server.substringAfter("://")) { askServer = true } }
+        if (vm.store.serverName.isNotBlank()) item {
+            Text("Jellyfin calls this server \u201c${vm.store.serverName}\u201d.", style = TvType.small, modifier = Modifier.padding(start = 4.dp))
+        }
         item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Snug 1.10.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { Text("Snug 1.11.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(
