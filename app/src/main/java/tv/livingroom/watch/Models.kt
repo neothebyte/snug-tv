@@ -66,9 +66,14 @@ data class MediaStreamInfo(
         return ""
     }
 
+    /** True for a subtitle track with no language and no real name in the file. */
+    fun isUnnamedSubtitle(): Boolean = type == "Subtitle" && languageName().isEmpty() && namedTitle() == null
+
+    private fun namedTitle(): String? = title.trim().takeIf { it.isNotEmpty() && !GENERATED_TITLE.containsMatchIn(it) }
+
     fun label(): String {
         val language = languageName()
-        val named = title.trim().takeIf { it.isNotEmpty() && !GENERATED_TITLE.containsMatchIn(it) }
+        val named = namedTitle()
         val first = when {
             named != null && language.isNotEmpty() && !named.contains(language, true) -> "$language · $named"
             named != null -> named
@@ -425,6 +430,27 @@ fun streamMatchesLanguage(stream: MediaStreamInfo, code: String): Boolean {
     val display = "${stream.displayLanguage} ${stream.title}".lowercase(Locale.US)
     return hints.any { hint -> language == hint || Regex("\\b${Regex.escape(hint)}\\b").containsMatchIn(display) }
 }
+
+/**
+ * Subtitle labels keyed by stream index. Untagged Blu-ray rips often carry dozens of image tracks
+ * with no language or name, which would all read the same, so repeated labels get a number.
+ */
+fun subtitleLabels(streams: List<MediaStreamInfo>): Map<Int, String> {
+    val subs = streams.filter { it.type == "Subtitle" }
+    val counts = subs.groupingBy { it.label() }.eachCount()
+    val seen = mutableMapOf<String, Int>()
+    return subs.associate { stream ->
+        val label = stream.label()
+        if ((counts[label] ?: 0) < 2) return@associate stream.index to label
+        val n = (seen[label] ?: 0) + 1
+        seen[label] = n
+        val (first, rest) = label.substringBefore(" · ") to label.substringAfter(" · ", "")
+        stream.index to (listOf("$first $n", rest).filter { it.isNotEmpty() }.joinToString(" · "))
+    }
+}
+
+/** A run longer than this of unnamed subtitle tracks is folded behind one row in the picker. */
+const val FOLD_UNNAMED_SUBS = 3
 
 fun preferredSubtitleIndex(streams: List<MediaStreamInfo>, code: String): Int? {
     val all = streams.filter { it.type == "Subtitle" }
