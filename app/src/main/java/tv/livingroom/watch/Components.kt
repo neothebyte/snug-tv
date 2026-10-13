@@ -62,10 +62,48 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Canvas
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.painter.ColorPainter
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import kotlin.math.roundToInt
 
+/**
+ * The picture behind every screen. Its gradients are painted once into a small picture and
+ * stretched, so the TV's graphics chip fills the screen once or twice a frame instead of seven
+ * times: on weak TV boxes that fill work, not the app's code, is what limits scrolling.
+ */
 @Composable
 fun FullBackdrop(url: String?, strong: Boolean = false) {
-    Box(Modifier.fillMaxSize().background(Ink)) {
+    // With no photo the baked picture is the whole, solid background; with one it's the dark
+    // scrims laid over the photo.
+    val glow = url == null
+    var photoShown by remember(url) { mutableStateOf(false) }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .drawWithCache {
+                val baked = bakeBackdrop(size, glow, strong)
+                val target = IntSize(size.width.roundToInt(), size.height.roundToInt())
+                onDrawWithContent {
+                    if (glow) {
+                        drawImage(baked, dstSize = target, filterQuality = FilterQuality.Low)
+                    } else {
+                        // Before the photo starts loading, plain ink stands in for it.
+                        if (!photoShown) drawRect(Ink)
+                        drawContent()
+                        drawImage(baked, dstSize = target, filterQuality = FilterQuality.Low)
+                    }
+                }
+            }
+    ) {
         if (url != null) {
             val context = LocalContext.current
             val request = remember(url) { ImageRequest.Builder(context).data(url).crossfade(240).build() }
@@ -74,47 +112,47 @@ fun FullBackdrop(url: String?, strong: Boolean = false) {
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 alignment = Alignment.TopCenter,
+                // Ink as the fade's starting picture, so nothing shows through mid-fade.
+                placeholder = InkPainter,
+                error = InkPainter,
+                onLoading = { photoShown = false },
+                onSuccess = { photoShown = true },
+                onError = { photoShown = false },
                 modifier = Modifier.fillMaxSize()
             )
-        } else {
-            Box(
-                Modifier.fillMaxSize().background(
-                    Brush.radialGradient(
-                        listOf(Color(0x40FFB05C), Color.Transparent),
-                        center = androidx.compose.ui.geometry.Offset(260f, 120f),
-                        radius = 1100f
-                    )
-                )
-            )
-            Box(
-                Modifier.fillMaxSize().background(
-                    Brush.radialGradient(
-                        listOf(Color(0x335C8EFF), Color.Transparent),
-                        center = androidx.compose.ui.geometry.Offset(1700f, 950f),
-                        radius = 1000f
-                    )
-                )
-            )
         }
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.horizontalGradient(
-                    0f to Color(if (strong) 0xF207080C else 0xE607080C),
-                    0.45f to Color(if (strong) 0xB307080C else 0x8007080C),
-                    1f to Color(0x2607080C)
-                )
+    }
+}
+
+/** Paints the backdrop's gradients at a quarter of [size]; they're soft enough to stretch back up. */
+private fun bakeBackdrop(size: Size, glow: Boolean, strong: Boolean): ImageBitmap {
+    val width = (size.width / 4f).roundToInt().coerceAtLeast(1)
+    val height = (size.height / 4f).roundToInt().coerceAtLeast(1)
+    val bitmap = ImageBitmap(width, height)
+    // The glow positions were laid out in screen pixels.
+    val k = width / size.width.coerceAtLeast(1f)
+    CanvasDrawScope().draw(Density(1f), LayoutDirection.Ltr, Canvas(bitmap), Size(width.toFloat(), height.toFloat())) {
+        if (glow) {
+            drawRect(Ink)
+            drawRect(Brush.radialGradient(listOf(Color(0x40FFB05C), Color.Transparent), center = Offset(260f * k, 120f * k), radius = 1100f * k))
+            drawRect(Brush.radialGradient(listOf(Color(0x335C8EFF), Color.Transparent), center = Offset(1700f * k, 950f * k), radius = 1000f * k))
+        }
+        drawRect(
+            Brush.horizontalGradient(
+                0f to Color(if (strong) 0xF207080C else 0xE607080C),
+                0.45f to Color(if (strong) 0xB307080C else 0x8007080C),
+                1f to Color(0x2607080C)
             )
         )
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
-                    0f to Color(0x4007080C),
-                    0.4f to Color(0x0007080C),
-                    1f to Color(0xF507080C)
-                )
+        drawRect(
+            Brush.verticalGradient(
+                0f to Color(0x4007080C),
+                0.4f to Color(0x0007080C),
+                1f to Color(0xF507080C)
             )
         )
     }
+    return bitmap
 }
 
 @Composable
@@ -203,20 +241,23 @@ fun PosterCard(
                 // redraw on every frame of the zoom. Only redraws, never re-lays out, on focus.
                 .drawBehind { if (focused) drawGlow() }
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF1B1D24))
                 .border(if (focused) 2.dp else 0.5.dp, if (focused) Color.White else Line, RoundedCornerShape(10.dp))
         ) {
             if (imageUrl != null) {
                 val context = LocalContext.current
                 // Posters have no transparency, so 16-bit pixels halve their memory and upload cost.
                 val request = remember(imageUrl) { ImageRequest.Builder(context).data(imageUrl).allowRgb565(true).build() }
+                // The blank colour is only painted until the poster arrives, not under it every frame.
                 AsyncImage(
                     model = request,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
+                    placeholder = PosterBlankPainter,
+                    error = PosterBlankPainter,
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
+                Box(Modifier.fillMaxSize().background(PosterBlank))
                 Text(
                     movie.cardTitle,
                     style = TvType.small,
@@ -257,6 +298,10 @@ fun PosterCard(
         }
     }
 }
+
+private val InkPainter = ColorPainter(Ink)
+private val PosterBlank = Color(0xFF1B1D24)
+private val PosterBlankPainter = ColorPainter(PosterBlank)
 
 private val GlowRings = listOf(3.dp to 0.20f, 7.dp to 0.12f, 12.dp to 0.06f)
 
