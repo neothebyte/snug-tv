@@ -44,6 +44,18 @@ sealed interface QuickState {
     data class Failed(val note: String) : QuickState
 }
 
+/** A locked profile being opened: its 4-digit PIN (or longer password) is asked for. */
+data class LockState(
+    val profile: Profile,
+    val password: Boolean,
+    val digits: String = "",
+    val error: String = "",
+    val busy: Boolean = false,
+    /** Goes up on each wrong PIN, so the boxes shake once per try. */
+    val shakes: Int = 0,
+    val help: Boolean = false
+)
+
 class AppModel(app: Application) : AndroidViewModel(app) {
     private val livingRoom = app as LivingRoomApp
     val store: SessionStore get() = livingRoom.store
@@ -83,6 +95,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         private set
     var quick by mutableStateOf<QuickState>(QuickState.Closed)
         private set
+    var lock by mutableStateOf<LockState?>(null)
+        private set
+    /** The profile signing in without a lock, so its tile can show it's working. */
+    var entering by mutableStateOf<String?>(null)
+        private set
+    /** "Who's watching?" is showing over the saved session, so that profile can carry on without signing in again. */
+    private var resuming = false
     private var quickJob: Job? = null
     var query by mutableStateOf("")
         private set
@@ -136,6 +155,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     init {
         when {
+            store.signedIn && store.askProfile -> {
+                resuming = true
+                loginStep = LoginStep.Profiles
+                loadProfiles()
+            }
             store.signedIn -> {
                 screen = Screen.Home
                 refresh()
@@ -568,6 +592,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     genreShelves(savedTopGenres(), fields)
                 }
                 home = rows.feed(known)
+                rememberPickerShots()
                 message = ""
                 busy = false
                 warmMovies()
@@ -666,15 +691,128 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             busy = true
             message = ""
             try {
-                profiles = withContext(Dispatchers.IO) { api.publicUsers() }
+                val shown = withContext(Dispatchers.IO) { api.publicUsers() }
+                profiles = shown + store.knownProfiles().filter { known -> shown.none { it.id == known.id } }
             } catch (_: Exception) {
-                profiles = emptyList()
-                message = "Can't reach Jellyfin at ${store.server}."
+                profiles = store.knownProfiles()
+                if (!resuming) message = "Can't reach Jellyfin at ${store.server}."
             } finally {
                 busy = false
                 profilesLoaded = true
             }
+            // Only one profile to pick from (or the server didn't answer): carry straight on.
+            if (resuming && profiles.size <= 1) enterHome()
         }
+    }
+
+    /** The still behind "Who's watching?": one of the saved ones, picked once each time Snug opens. */
+    val pickerShot: Pair<String, String>? by lazy { store.pickerShots.randomOrNull() }
+
+    private fun rememberPickerShots() {
+        val movies = home?.shelves.orEmpty().flatMap { it.movies }
+            .filter { !it.isEpisode && it.backdropTag != null }
+            .distinctBy { it.id }
+            .sortedByDescending { it.communityRating ?: 0.0 }
+            .take(12)
+        val shots = movies.mapNotNull { movie -> api.backdropUrl(movie, 1920)?.let { it to movie.name } }
+        if (shots.isNotEmpty()) store.pickerShots = shots
+    }
+
+    /** A tile on "Who's watching?" was picked. */
+    fun pickProfile(profile: Profile) {
+        if (busy || entering != null) return
+        message = ""
+        if (resuming && profile.id == store.userId && !profile.hasPassword) {
+            enterHome()
+            return
+        }
+        if (profile.hasPassword) {
+            lock = LockState(profile, password = store.usesPassword(profile.id))
+            return
+        }
+        viewModelScope.launch {
+            entering = profile.id
+            try {
+                authenticate(profile.name, "")
+                enterHome()
+            } catch (error: Exception) {
+                entering = null
+                if (error is JellyfinException && error.code == 401) {
+                    // The server says this profile has a password after all.
+                    lock = LockState(profile.copy(hasPassword = true), password = store.usesPassword(profile.id))
+                } else {
+                    message = "Couldn't reach the server."
+                }
+            }
+        }
+    }
+
+    fun pinDigit(digit: Char) {
+        val now = lock ?: return
+        if (now.password || now.busy || now.digits.length >= 4) return
+        val digits = now.digits + digit
+        lock = now.copy(digits = digits, error = "")
+        if (digits.length == 4) unlock(digits)
+    }
+
+    fun pinDelete(): Boolean {
+        val now = lock ?: return false
+        if (now.busy || now.digits.isEmpty()) return false
+        lock = now.copy(digits = now.digits.dropLast(1), error = "")
+        return true
+    }
+
+    fun lockWithPassword(password: Boolean) {
+        val now = lock ?: return
+        lock = now.copy(password = password, digits = "", error = "")
+    }
+
+    fun showLockHelp() {
+        lock = lock?.copy(help = true)
+    }
+
+    fun closeLock() {
+        lock = null
+    }
+
+    /** Signs in to the locked profile; a PIN is simply a 4-digit Jellyfin password. */
+    fun unlock(secret: String) {
+        val now = lock ?: return
+        lock = now.copy(busy = true, error = "")
+        viewModelScope.launch {
+            try {
+                authenticate(now.profile.name, secret)
+                store.setUsesPassword(now.profile.id, !(secret.length == 4 && secret.all { it.isDigit() }))
+                enterHome()
+            } catch (error: Exception) {
+                if (lock?.profile?.id != now.profile.id) return@launch
+                val wrong = error is JellyfinException && error.code == 401
+                lock = now.copy(
+                    digits = "",
+                    busy = false,
+                    shakes = if (wrong && !now.password) now.shakes + 1 else now.shakes,
+                    error = when {
+                        !wrong -> "Couldn't reach the server."
+                        now.password -> "That password isn't right."
+                        else -> "That PIN isn't right. Try again."
+                    }
+                )
+            }
+        }
+    }
+
+    /**
+     * Signs in, first letting go of any session this TV still holds (the one "Who's watching?"
+     * was showing over), so the old token isn't sent along or left open on the server.
+     */
+    private suspend fun authenticate(username: String, password: String) {
+        val old = store.token
+        if (old != null) {
+            resuming = false
+            store.clearSession()
+            withContext(Dispatchers.IO) { api.logout(old) }
+        }
+        withContext(Dispatchers.IO) { api.authenticate(username, password) }
     }
 
     fun signIn(username: String, password: String) {
@@ -686,7 +824,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             busy = true
             message = ""
             try {
-                withContext(Dispatchers.IO) { api.authenticate(username.trim(), password) }
+                authenticate(username.trim(), password)
                 busy = false
                 enterHome()
             } catch (error: Exception) {
@@ -701,6 +839,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun enterHome() {
+        resuming = false
+        lock = null
+        entering = null
+        message = ""
         backStack.clear()
         screen = Screen.Home
         refresh()
@@ -810,7 +952,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         quick = QuickState.Closed
     }
 
+    /** Signs out and goes back to "Who's watching?". */
     fun signOut() {
+        store.token?.let { token -> viewModelScope.launch(Dispatchers.IO) { api.logout(token) } }
         clearSignedIn()
         if (store.server.isBlank()) {
             loginStep = LoginStep.Server
@@ -823,6 +967,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private fun clearSignedIn() {
         closeQuickConnect()
+        resuming = false
+        lock = null
+        entering = null
         store.clearSession()
         homeJob?.cancel()
         searchJob?.cancel()
@@ -882,6 +1029,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun toggleThemeMusic() {
         themeMusic = !themeMusic
         store.themeMusic = themeMusic
+    }
+
+    var askProfile by mutableStateOf(store.askProfile)
+        private set
+
+    fun toggleAskProfile() {
+        askProfile = !askProfile
+        store.askProfile = askProfile
     }
 
     fun setScreensaver(minutes: Int) {

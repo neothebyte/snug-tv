@@ -73,6 +73,20 @@ class JellyfinClient(
         val json = JSONObject(text)
         val user = json.getJSONObject("User")
         store.saveSession(json.getString("AccessToken"), user.getString("Id"), user.optString("Name"))
+        store.rememberProfile(user)
+    }
+
+    /** Ends a session on the server, so a TV that switched profiles doesn't leave old ones behind. */
+    fun logout(token: String) {
+        runCatching {
+            val request = Request.Builder()
+                .url(base().trimEnd('/') + "/Sessions/Logout")
+                .header("X-Emby-Authorization", "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.12.0\", Token=\"$token\"")
+                .header("X-Emby-Token", token)
+                .post(ByteArray(0).toRequestBody(null))
+                .build()
+            quick.newCall(request).execute().close()
+        }
     }
 
     /** One page of movies, filtered and sorted by the server. */
@@ -543,7 +557,7 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.11.0\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.12.0\"$token"
     }
 
     /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */

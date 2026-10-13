@@ -100,6 +100,61 @@ class SessionStore(context: Context) {
             prefs.edit().putInt(KEY_SCREENSAVER, value).apply()
         }
 
+    /** Start on "Who's watching?" when Snug opens and the server has more than one profile. */
+    var askProfile: Boolean
+        get() = prefs.getBoolean(KEY_ASK_PROFILE, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_ASK_PROFILE, value).apply()
+        }
+
+    /** Movie stills (address and title) from the library, shown big behind "Who's watching?". */
+    var pickerShots: List<Pair<String, String>>
+        get() = (prefs.getString(KEY_PICKER_SHOT, "") ?: "").lines().mapNotNull { line ->
+            val parts = line.split('\t')
+            if (parts.size == 2 && parts[0].isNotBlank()) parts[0] to parts[1] else null
+        }
+        set(value) {
+            val text = value.joinToString("\n") { "${it.first}\t${it.second.replace('\t', ' ').replace('\n', ' ')}" }
+            if (text != prefs.getString(KEY_PICKER_SHOT, "")) prefs.edit().putString(KEY_PICKER_SHOT, text).apply()
+        }
+
+    /** Profiles signed in on this TV before, so ones hidden from Jellyfin's login screen still get a tile. */
+    fun knownProfiles(): List<Profile> {
+        val array = runCatching { org.json.JSONArray(prefs.getString(KEY_PROFILES, "[]")) }.getOrNull() ?: return emptyList()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val json = array.optJSONObject(i) ?: continue
+                val profile = parseProfile(json)
+                if (profile.id.isNotBlank() && profile.name.isNotBlank()) add(profile)
+            }
+        }
+    }
+
+    fun rememberProfile(user: org.json.JSONObject) {
+        val profile = parseProfile(user)
+        if (profile.id.isBlank()) return
+        val array = org.json.JSONArray()
+        (knownProfiles().filter { it.id != profile.id } + profile).takeLast(12).forEach {
+            array.put(
+                org.json.JSONObject()
+                    .put("Id", it.id)
+                    .put("Name", it.name)
+                    .put("HasPassword", it.hasPassword)
+                    .put("PrimaryImageTag", if (it.id == profile.id) user.optString("PrimaryImageTag") else if (it.hasImage) "1" else "")
+            )
+        }
+        prefs.edit().putString(KEY_PROFILES, array.toString()).apply()
+    }
+
+    /** Profiles whose lock is a longer password rather than a 4-digit PIN. */
+    fun usesPassword(userId: String): Boolean = userId in (prefs.getStringSet(KEY_PASSWORD_LOCKS, emptySet()) ?: emptySet())
+
+    fun setUsesPassword(userId: String, password: Boolean) {
+        val now = (prefs.getStringSet(KEY_PASSWORD_LOCKS, emptySet()) ?: emptySet()).toMutableSet()
+        if (password) now.add(userId) else now.remove(userId)
+        prefs.edit().putStringSet(KEY_PASSWORD_LOCKS, now).apply()
+    }
+
     val deviceId: String
         get() {
             val existing = prefs.getString(KEY_DEVICE, null)
@@ -145,5 +200,9 @@ class SessionStore(context: Context) {
         private const val KEY_STILL_WATCHING = "stillWatching"
         private const val KEY_THEME_MUSIC = "themeMusic"
         private const val KEY_SCREENSAVER = "screensaver"
+        private const val KEY_ASK_PROFILE = "askProfile"
+        private const val KEY_PICKER_SHOT = "pickerShots"
+        private const val KEY_PROFILES = "profiles"
+        private const val KEY_PASSWORD_LOCKS = "passwordLocks"
     }
 }
