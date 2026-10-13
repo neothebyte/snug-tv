@@ -110,7 +110,9 @@ fun WatchApp(vm: AppModel) {
     }
     // 1280 wide is plenty under the dark gradients, and less than half the pixels of 1920 to decode and upload.
     val shot = backdropMovie?.let { api.backdropUrl(it, 1280) }
-    Box(Modifier.fillMaxSize().background(Ink)) {
+    // No colour of its own: FullBackdrop already paints every pixel, and each extra full-screen
+    // layer costs the TV box's graphics chip a whole screen of work every frame.
+    Box(Modifier.fillMaxSize()) {
         FullBackdrop(shot, strong = screen is Screen.Detail || screen is Screen.Series)
         if (screen is Screen.Login) {
             LoginScreen(vm)
