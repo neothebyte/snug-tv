@@ -26,6 +26,9 @@ class MainActivity : ComponentActivity() {
                 WatchApp(model)
             }
         }
+        // The theme's window colour only covers the moment before the first frame. After that the
+        // backdrop paints every pixel, so the window colour would be one more full screen to fill.
+        window.setBackgroundDrawable(null)
     }
 
     /**
