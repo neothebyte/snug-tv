@@ -109,7 +109,7 @@ fun WatchApp(vm: AppModel) {
         else -> null
     }
     // 1280 wide is plenty under the dark gradients, and less than half the pixels of 1920 to decode and upload.
-    val shot = backdropMovie?.let { api.backdropUrl(it, 1280) }
+    val shot = if (screen is Screen.Login) vm.store.pickerShot.ifBlank { null } else backdropMovie?.let { api.backdropUrl(it, 1280) }
     Box(Modifier.fillMaxSize().background(Ink)) {
         FullBackdrop(shot, strong = screen is Screen.Detail || screen is Screen.Series)
         if (screen is Screen.Login) {
@@ -315,87 +315,6 @@ private fun ServerStep(vm: AppModel) {
         ) { typed ->
             askAddress = false
             vm.connectTo(typed)
-        }
-    }
-}
-
-@Composable
-private fun ProfileStep(vm: AppModel) {
-    var passwordFor by remember { mutableStateOf<Profile?>(null) }
-    var askUser by remember { mutableStateOf(false) }
-    var manualName by remember { mutableStateOf("") }
-    val first = remember { FocusRequester() }
-    LaunchedEffect(vm.profilesLoaded, vm.profiles.size) {
-        if (vm.profilesLoaded) {
-            delay(80)
-            runCatching { first.requestFocus() }
-        }
-    }
-    Column(
-        Modifier.fillMaxSize().padding(horizontal = SafeX + 24.dp, vertical = SafeY),
-        verticalArrangement = Arrangement.Center
-    ) {
-        Kicker("Snug")
-        Text("Who's watching?", style = TvType.display)
-        Spacer(Modifier.height(28.dp))
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
-            contentPadding = PaddingValues(vertical = 10.dp, horizontal = 6.dp)
-        ) {
-            items(vm.profiles, key = { it.id }) { profile ->
-                ProfileTile(
-                    name = profile.name,
-                    imageUrl = if (profile.hasImage) vm.api.userImageUrl(profile.id) else null,
-                    requester = if (profile == vm.profiles.first()) first else null
-                ) {
-                    if (profile.hasPassword) passwordFor = profile else vm.signIn(profile.name, "")
-                }
-            }
-            item {
-                ProfileTile(
-                    name = "Other user",
-                    imageUrl = null,
-                    icon = R.drawable.ic_add,
-                    requester = if (vm.profiles.isEmpty()) first else null
-                ) { askUser = true }
-            }
-            item {
-                ProfileTile(name = "Quick Connect", imageUrl = null, icon = R.drawable.ic_phone) { vm.startQuickConnect() }
-            }
-        }
-        Spacer(Modifier.height(18.dp))
-        if (vm.busy) {
-            CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
-        } else if (vm.message.isNotBlank()) {
-            Text(vm.message, style = TvType.body, color = Cream)
-        }
-        Spacer(Modifier.height(24.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            val address = vm.store.server.substringAfter("://")
-            Text(
-                "Server  " + if (vm.store.serverName.isBlank()) address else "${vm.store.serverName} · $address",
-                style = TvType.small
-            )
-            TvButton("Change server") { vm.changeServer() }
-        }
-    }
-    passwordFor?.let { profile ->
-        TextEntryDialog(
-            title = profile.name,
-            initial = "",
-            hint = "Password",
-            password = true,
-            onDismiss = { passwordFor = null }
-        ) { password ->
-            passwordFor = null
-            vm.signIn(profile.name, password)
-        }
-    }
-    if (askUser) {
-        TextEntryDialog("Username", manualName, "Username", password = false, onDismiss = { askUser = false }) { name ->
-            askUser = false
-            manualName = name.trim()
-            if (manualName.isNotEmpty()) passwordFor = Profile("", manualName, hasPassword = true, hasImage = false)
         }
     }
 }
@@ -1364,8 +1283,11 @@ private fun SettingsScreen(vm: AppModel) {
         if (vm.store.serverName.isNotBlank()) item {
             Text("Jellyfin calls this server \u201c${vm.store.serverName}\u201d.", style = TvType.small, modifier = Modifier.padding(start = 4.dp))
         }
-        item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Snug 1.11.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        item { SettingRow("Switch profile", vm.store.userName) { vm.signOut() } }
+        item {
+            SettingRow("Ask who's watching when Snug opens", if (vm.askProfile) "On" else "Off") { vm.toggleAskProfile() }
+        }
+        item { Text("Snug 1.12.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(
