@@ -12,7 +12,7 @@ android {
         applicationId = "tv.livingroom.watch"
         minSdk = 24
         targetSdk = 35
-        versionCode = 16
+        versionCode = 18
         versionName = "1.12.0"
     }
 
