@@ -592,7 +592,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     genreShelves(savedTopGenres(), fields)
                 }
                 home = rows.feed(known)
-                home?.hero?.let { api.backdropUrl(it, 1280) }?.let { store.pickerShot = it }
+                rememberPickerShots()
                 message = ""
                 busy = false
                 warmMovies()
@@ -703,6 +703,19 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             // Only one profile to pick from (or the server didn't answer): carry straight on.
             if (resuming && profiles.size <= 1) enterHome()
         }
+    }
+
+    /** The still behind "Who's watching?": one of the saved ones, picked once each time Snug opens. */
+    val pickerShot: Pair<String, String>? by lazy { store.pickerShots.randomOrNull() }
+
+    private fun rememberPickerShots() {
+        val movies = home?.shelves.orEmpty().flatMap { it.movies }
+            .filter { !it.isEpisode && it.backdropTag != null }
+            .distinctBy { it.id }
+            .sortedByDescending { it.communityRating ?: 0.0 }
+            .take(12)
+        val shots = movies.mapNotNull { movie -> api.backdropUrl(movie, 1920)?.let { it to movie.name } }
+        if (shots.isNotEmpty()) store.pickerShots = shots
     }
 
     /** A tile on "Who's watching?" was picked. */

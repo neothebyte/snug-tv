@@ -109,7 +109,7 @@ fun WatchApp(vm: AppModel) {
         else -> null
     }
     // 1280 wide is plenty under the dark gradients, and less than half the pixels of 1920 to decode and upload.
-    val shot = if (screen is Screen.Login) vm.store.pickerShot.ifBlank { null } else backdropMovie?.let { api.backdropUrl(it, 1280) }
+    val shot = backdropMovie?.let { api.backdropUrl(it, 1280) }
     Box(Modifier.fillMaxSize().background(Ink)) {
         FullBackdrop(shot, strong = screen is Screen.Detail || screen is Screen.Series)
         if (screen is Screen.Login) {

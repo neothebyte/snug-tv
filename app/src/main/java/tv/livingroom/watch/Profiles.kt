@@ -49,11 +49,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 
@@ -69,17 +72,36 @@ fun tileColor(name: String): Color {
     return TileColors[Math.floorMod(hash, TileColors.size)]
 }
 
-/** Darkens the backdrop behind the login screens so the tiles stand out. */
+/** A big movie still behind "Who's watching?", darkened at the edges like Netflix's. */
 @Composable
-private fun LoginVeil(strong: Boolean) {
-    Box(
-        Modifier.fillMaxSize().background(
-            Brush.radialGradient(
-                listOf(Color(if (strong) 0xD907080C else 0x8007080C), Color(0xF207080C)),
-                radius = 1400f
+private fun PickerBackdrop(vm: AppModel) {
+    val pick = vm.pickerShot ?: return
+    Box(Modifier.fillMaxSize().background(Ink)) {
+        AsyncImage(
+            model = pick.first,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            alignment = Alignment.TopCenter,
+            modifier = Modifier.fillMaxSize()
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.radialGradient(listOf(Color(0x1F000000), Color(0xB8000000)), radius = 1500f)
             )
         )
-    )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(0f to Color(0x73000000), 0.22f to Color.Transparent, 0.45f to Color.Transparent, 1f to Color(0xC7000000))
+            )
+        )
+        Text(
+            pick.second,
+            style = TvType.display.copy(fontSize = 26.sp, lineHeight = 30.sp, color = Color.White),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = SafeX, bottom = SafeY + 8.dp).widthIn(max = 220.dp)
+        )
+    }
 }
 
 @Composable
@@ -91,6 +113,7 @@ fun ProfileStep(vm: AppModel) {
     }
     var passwordFor by remember { mutableStateOf<String?>(null) }
     var askUser by remember { mutableStateOf(false) }
+    var manage by remember { mutableStateOf(false) }
     var manualName by remember { mutableStateOf("") }
     val first = remember { FocusRequester() }
     LaunchedEffect(vm.profilesLoaded, vm.profiles.size) {
@@ -99,24 +122,24 @@ fun ProfileStep(vm: AppModel) {
             runCatching { first.requestFocus() }
         }
     }
-    LoginVeil(strong = false)
+    PickerBackdrop(vm)
     Box(Modifier.fillMaxSize()) {
         Text(
             "Snug",
-            style = TvType.headline.copy(color = Color(0xFFFFCF8A)),
+            style = TvType.headline.copy(color = Color(0xFFFFCF8A), fontSize = 26.sp),
             modifier = Modifier.padding(start = SafeX, top = SafeY)
         )
         Column(
             Modifier.fillMaxSize().padding(horizontal = SafeX, vertical = SafeY),
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("Who's watching?", style = TvType.display.copy(fontSize = 40.sp, lineHeight = 46.sp))
-            Spacer(Modifier.height(26.dp))
+            Text("Who's watching?", style = TvType.display.copy(fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold, color = Color.White))
+            Spacer(Modifier.height(14.dp))
             LazyRow(
                 Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(22.dp, Alignment.CenterHorizontally),
-                contentPadding = PaddingValues(vertical = 12.dp, horizontal = 12.dp)
+                horizontalArrangement = Arrangement.spacedBy(26.dp, Alignment.CenterHorizontally),
+                contentPadding = PaddingValues(vertical = 10.dp, horizontal = 12.dp)
             ) {
                 items(vm.profiles, key = { it.id }) { profile ->
                     UserTile(
@@ -129,33 +152,33 @@ fun ProfileStep(vm: AppModel) {
                 }
                 item {
                     UserTile(
-                        name = "Add profile",
+                        name = "Add Profile",
                         imageUrl = null,
                         icon = R.drawable.ic_add,
                         requester = if (vm.profiles.isEmpty()) first else null
                     ) { askUser = true }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Box(Modifier.height(24.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.height(22.dp), contentAlignment = Alignment.Center) {
                 if (vm.busy) {
-                    CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                    CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                 } else if (vm.message.isNotBlank()) {
                     Text(vm.message, style = TvType.body, color = Cream)
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TvButton("Quick Connect", icon = R.drawable.ic_phone) { vm.startQuickConnect() }
-                TvButton("Change server", icon = R.drawable.ic_server) { vm.changeServer() }
-            }
-            Spacer(Modifier.height(10.dp))
-            val address = vm.store.server.substringAfter("://")
-            Text(
-                if (vm.store.serverName.isBlank()) address else "${vm.store.serverName} · $address",
-                style = TvType.small
-            )
+            Spacer(Modifier.height(6.dp))
+            OutlinePill("Manage Profiles", R.drawable.ic_edit) { manage = true }
         }
+    }
+    if (manage) {
+        ManageDialog(
+            vm,
+            onDismiss = { manage = false },
+            onAdd = {
+                manage = false
+                askUser = true
+            }
+        )
     }
     passwordFor?.let { name ->
         TextEntryDialog(
@@ -201,7 +224,7 @@ private fun UserTile(
     val focused by interaction.collectIsFocusedAsState()
     val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "tile")
     val pulse by animateFloatAsState(if (working) 0.55f else 1f, label = "working")
-    val shape = RoundedCornerShape(size * 0.12f)
+    val shape = RoundedCornerShape(size * 0.07f)
     Column(
         Modifier
             .width(size + 16.dp)
@@ -214,8 +237,8 @@ private fun UserTile(
                 .size(size)
                 .graphicsLayer { scaleX = scale; scaleY = scale; alpha = pulse }
                 .clip(shape)
-                .background(if (icon != null) Color.White.copy(alpha = if (focused) 0.18f else 0.08f) else tileColor(name))
-                .border(if (focused) 3.dp else 1.dp, if (focused) Color.White else Color.White.copy(alpha = 0.12f), shape),
+                .background(if (icon != null) Color.White.copy(alpha = if (focused) 0.24f else 0.12f) else tileColor(name))
+                .then(if (focused) Modifier.border(3.dp, Color.White, shape) else Modifier),
             contentAlignment = Alignment.Center
         ) {
             when {
@@ -228,7 +251,7 @@ private fun UserTile(
                 icon != null -> Image(
                     painterResource(icon),
                     null,
-                    colorFilter = ColorFilter.tint(if (focused) Cream else Muted),
+                    colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.9f)),
                     modifier = Modifier.size(size * 0.36f)
                 )
                 else -> Text(
@@ -237,27 +260,22 @@ private fun UserTile(
                 )
             }
             if (locked) {
-                Box(
-                    Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(8.dp)
-                        .size(24.dp)
-                        .clip(CircleShape)
-                        .background(Color(0x52000000)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(painterResource(R.drawable.ic_lock), "Locked", colorFilter = ColorFilter.tint(Color.White), modifier = Modifier.size(14.dp))
-                }
+                Image(
+                    painterResource(R.drawable.ic_lock),
+                    "Locked",
+                    colorFilter = ColorFilter.tint(Color.White),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(8.dp).size(13.dp)
+                )
             }
         }
         if (focusable) {
             Spacer(Modifier.height(12.dp))
-            Text(name, style = TvType.title, color = if (focused) Cream else Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(name, style = TvType.title, color = if (focused) Color.White else Color.White.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
 
-/** "Profile lock is on": a 4-digit PIN (the profile's Jellyfin password), or a longer password. */
+/** "Profile Lock is currently on": four boxes for the PIN (the profile's Jellyfin password), like Netflix. */
 @Composable
 private fun LockScreen(vm: AppModel, lock: LockState) {
     BackHandler { vm.closeLock() }
@@ -280,11 +298,10 @@ private fun LockScreen(vm: AppModel, lock: LockState) {
             8f at 290
         })
     }
-    LoginVeil(strong = true)
-    Column(
+    Box(
         Modifier
             .fillMaxSize()
-            .padding(horizontal = SafeX, vertical = SafeY)
+            .background(Brush.radialGradient(listOf(Color(0xFF2C1714), Color(0xFF1C0F0D), Color(0xFF120908)), radius = 1500f))
             .onPreviewKeyEvent { event ->
                 // Number buttons on the remote type straight into the boxes.
                 val native = event.nativeKeyEvent
@@ -301,78 +318,74 @@ private fun LockScreen(vm: AppModel, lock: LockState) {
                     }
                     else -> false
                 }
-            },
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
+            }
     ) {
-        UserTile(profile.name, if (profile.hasImage) vm.api.userImageUrl(profile.id) else null, size = 64.dp, focusable = false)
-        Spacer(Modifier.height(6.dp))
-        Text(profile.name, style = TvType.title)
-        Spacer(Modifier.height(12.dp))
-        Text("Profile lock is on.", style = TvType.small)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            if (lock.password) "Enter the password for this profile." else "Enter your PIN to open this profile.",
-            style = TvType.display.copy(fontSize = 28.sp, lineHeight = 34.sp),
-            textAlign = TextAlign.Center
-        )
-        Spacer(Modifier.height(16.dp))
-        if (lock.password) {
-            TvButton("Type password", primary = true, icon = R.drawable.ic_keyboard, focusRequester = typeButton) { typing = true }
-        } else {
-            Row(
-                Modifier.offset(x = shake.value.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                for (i in 0 until 4) {
-                    val filled = i < lock.digits.length
-                    val current = i == lock.digits.length && !lock.busy
-                    val edge = when {
-                        lock.error.isNotBlank() && lock.digits.isEmpty() -> Color(0xFFFF8A8A)
-                        current -> Color.White
-                        else -> Color.White.copy(alpha = 0.35f)
-                    }
-                    Box(
-                        Modifier
-                            .size(width = 44.dp, height = 54.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0x59000000))
-                            .border(1.5.dp, edge, RoundedCornerShape(10.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (filled) Box(Modifier.size(12.dp).clip(CircleShape).background(Cream))
+        CloseButton(Modifier.align(Alignment.TopEnd).padding(end = SafeX - 12.dp, top = SafeY - 6.dp)) { vm.closeLock() }
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = SafeX, vertical = SafeY),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(Modifier.weight(0.8f))
+            Text("Profile Lock is currently on.", style = TvType.small.copy(color = Color.White.copy(alpha = 0.7f)))
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (lock.password) "Enter your password to access this profile." else "Enter your pin to access this profile.",
+                style = TvType.display.copy(fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold, color = Color.White),
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(20.dp))
+            if (lock.password) {
+                TvButton("Type password", primary = true, icon = R.drawable.ic_keyboard, focusRequester = typeButton) { typing = true }
+            } else {
+                Row(Modifier.offset(x = shake.value.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (i in 0 until 4) {
+                        val filled = i < lock.digits.length
+                        val current = i == lock.digits.length && !lock.busy
+                        val edge = when {
+                            lock.error.isNotBlank() && lock.digits.isEmpty() -> Color(0xFFFF8A8A)
+                            current -> Color.White
+                            else -> Color.White.copy(alpha = 0.4f)
+                        }
+                        Box(
+                            Modifier
+                                .size(width = 46.dp, height = 58.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(Color(0xFF130A09))
+                                .border(if (current) 1.5.dp else 1.dp, edge, RoundedCornerShape(9.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (filled) Box(Modifier.size(10.dp).clip(CircleShape).background(Cream))
+                        }
                     }
                 }
             }
-        }
-        Box(Modifier.height(28.dp), contentAlignment = Alignment.Center) {
-            if (lock.busy) {
-                CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
-            } else if (lock.error.isNotBlank()) {
-                Text(lock.error, style = TvType.body, color = Color(0xFFFFB4B4))
+            Box(Modifier.height(30.dp), contentAlignment = Alignment.Center) {
+                if (lock.busy) {
+                    CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                } else if (lock.error.isNotBlank()) {
+                    Text(lock.error, style = TvType.body, color = Color(0xFFFFB4B4))
+                }
             }
-        }
-        if (!lock.password) {
-            Keypad(vm, firstKey)
-            Spacer(Modifier.height(14.dp))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (lock.password) {
-                TvButton("Use PIN instead") { vm.lockWithPassword(false) }
-                TvButton("Forgot password?") { vm.showLockHelp() }
-            } else {
-                TvButton("Use password instead") { vm.lockWithPassword(true) }
-                TvButton("Forgot PIN?") { vm.showLockHelp() }
+            // Most TV remotes have no number buttons, so the digits are on screen too.
+            if (!lock.password) Keypad(vm, firstKey)
+            Spacer(Modifier.weight(1f))
+            TextLink(if (lock.password) "Forgot password?" else "Forgot Pin?") { vm.showLockHelp() }
+            if (lock.help) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Ask whoever looks after the Jellyfin server to change it: Dashboard, Users, ${profile.name}, Password. A PIN is just a 4-digit password.",
+                    style = TvType.small,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.widthIn(max = 460.dp)
+                )
+                Spacer(Modifier.height(4.dp))
+                if (lock.password) {
+                    TextLink("Use PIN instead") { vm.lockWithPassword(false) }
+                } else {
+                    TextLink("Use password instead") { vm.lockWithPassword(true) }
+                }
             }
-        }
-        if (lock.help) {
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "Only someone with an admin account can change it: in Jellyfin, open Dashboard, Users, ${profile.name}, Password. A PIN is just a 4-digit password.",
-                style = TvType.body,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.widthIn(max = 520.dp)
-            )
+            Spacer(Modifier.weight(0.35f))
         }
     }
     if (typing && lock.password && !lock.busy) {
@@ -389,21 +402,111 @@ private fun LockScreen(vm: AppModel, lock: LockState) {
     }
 }
 
+/** Every option that isn't a profile tile: adding people, Quick Connect and the server. */
+@Composable
+private fun ManageDialog(vm: AppModel, onDismiss: () -> Unit, onAdd: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val first = remember { FocusRequester() }
+        LaunchedEffect(Unit) {
+            delay(60)
+            runCatching { first.requestFocus() }
+        }
+        Column(
+            Modifier
+                .width(440.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color(0xF2181A21))
+                .border(1.dp, Line, RoundedCornerShape(22.dp))
+                .padding(24.dp)
+        ) {
+            Text("Manage Profiles", style = TvType.headline)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Each tile is a Jellyfin user. To add someone, change a picture or set a PIN (a 4-digit password), open Dashboard, Users in Jellyfin with an admin account.",
+                style = TvType.body
+            )
+            Spacer(Modifier.height(16.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                TvButton("Sign in with another account", Modifier.fillMaxWidth(), icon = R.drawable.ic_add, focusRequester = first) { onAdd() }
+                TvButton("Quick Connect", Modifier.fillMaxWidth(), icon = R.drawable.ic_phone) {
+                    onDismiss()
+                    vm.startQuickConnect()
+                }
+                TvButton("Change server", Modifier.fillMaxWidth(), icon = R.drawable.ic_server) {
+                    onDismiss()
+                    vm.changeServer()
+                }
+                TvButton("Done", Modifier.fillMaxWidth()) { onDismiss() }
+            }
+            Spacer(Modifier.height(12.dp))
+            val address = vm.store.server.substringAfter("://")
+            Text(
+                "Server  " + if (vm.store.serverName.isBlank()) address else "${vm.store.serverName} · $address",
+                style = TvType.small
+            )
+        }
+    }
+}
+
+@Composable
+private fun OutlinePill(label: String, icon: Int, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val content = if (focused) Color(0xFF111111) else Color.White
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (focused) Color.White else Color(0x26000000))
+            .border(1.5.dp, if (focused) Color.White else Color.White.copy(alpha = 0.75f), RoundedCornerShape(50))
+            .clickable(interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Image(painterResource(icon), null, colorFilter = ColorFilter.tint(content), modifier = Modifier.size(15.dp))
+        Text(label, style = TvType.button, color = content)
+    }
+}
+
+@Composable
+private fun TextLink(label: String, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Text(
+        label,
+        style = TvType.title,
+        color = if (focused) Color(0xFF111111) else Color.White,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (focused) Color.White else Color.Transparent)
+            .clickable(interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    )
+}
+
+@Composable
+private fun CloseButton(modifier: Modifier, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Box(
+        modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(if (focused) Color.White else Color.White.copy(alpha = 0.16f))
+            .clickable(interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(painterResource(R.drawable.ic_close), "Back to profiles", colorFilter = ColorFilter.tint(if (focused) Color(0xFF111111) else Color.White), modifier = Modifier.size(20.dp))
+    }
+}
+
 @Composable
 private fun Keypad(vm: AppModel, firstKey: FocusRequester) {
-    val rows = listOf("123", "456", "789", " 0<")
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        for (row in rows) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (key in row) {
-                    when (key) {
-                        ' ' -> Spacer(Modifier.size(width = 60.dp, height = 40.dp))
-                        '<' -> PadKey("", R.drawable.ic_backspace) { vm.pinDelete() }
-                        else -> PadKey(key.toString(), requester = if (key == '1') firstKey else null) { vm.pinDigit(key) }
-                    }
-                }
-            }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (key in "1234567890") {
+            PadKey(key.toString(), requester = if (key == '1') firstKey else null) { vm.pinDigit(key) }
         }
+        PadKey("", R.drawable.ic_backspace) { vm.pinDelete() }
     }
 }
 
@@ -414,17 +517,17 @@ private fun PadKey(label: String, icon: Int? = null, requester: FocusRequester? 
     val content = if (focused) Color(0xFF111111) else Cream
     Box(
         Modifier
-            .size(width = 60.dp, height = 40.dp)
+            .size(width = 38.dp, height = 38.dp)
             .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (focused) Color.White else Color.White.copy(alpha = 0.09f))
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (focused) Color.White else Color.White.copy(alpha = 0.08f))
             .clickable(interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         if (icon != null) {
-            Image(painterResource(icon), "Delete", colorFilter = ColorFilter.tint(content), modifier = Modifier.size(20.dp))
+            Image(painterResource(icon), "Delete", colorFilter = ColorFilter.tint(content), modifier = Modifier.size(18.dp))
         } else {
-            Text(label, style = TvType.headline.copy(fontSize = 18.sp, lineHeight = 22.sp), color = content)
+            Text(label, style = TvType.headline.copy(fontSize = 16.sp, lineHeight = 20.sp), color = content)
         }
     }
 }
