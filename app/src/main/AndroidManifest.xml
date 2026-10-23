@@ -6,6 +6,11 @@
     <!-- Lets server discovery hear replies to its broadcast on boxes that filter them. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
+    <!-- Snug Home (the launcher) reads the top shelf. Only apps signed with Snug's key may hold this. -->
+    <permission
+        android:name="tv.livingroom.permission.READ_SHELF"
+        android:protectionLevel="signature" />
+
     <uses-feature
         android:name="android.software.leanback"
         android:required="false" />
@@ -34,6 +39,11 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Snug Home opens a title from its top shelf. -->
+            <intent-filter>
+                <action android:name="tv.livingroom.watch.OPEN_ITEM" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
         <activity
             android:name=".PlayerActivity"
@@ -41,5 +51,10 @@
             android:exported="false"
             android:launchMode="singleTop"
             android:screenOrientation="landscape" />
+        <provider
+            android:name=".ShelfProvider"
+            android:authorities="tv.livingroom.watch.shelf"
+            android:exported="true"
+            android:readPermission="tv.livingroom.permission.READ_SHELF" />
     </application>
 </manifest>

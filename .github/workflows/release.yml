@@ -1,8 +1,9 @@
 name: Release
 
-# Publishes a signed APK on the Releases page whenever main has a version
-# (versionName in app/build.gradle.kts) that doesn't have a release yet.
-# On pull requests it does everything except publish, as a check.
+# One build per push: on pull requests it builds and signs both APKs and keeps them as artifacts, as a check;
+# on main it also publishes them as a GitHub Release whenever the version (versionName in app/build.gradle.kts)
+# doesn't have one yet. (Build and Release used to be two workflows doing the same Gradle build twice, which
+# burned the account's free Actions minutes at double speed.)
 on:
   push:
     branches: [main]
@@ -13,8 +14,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event_name }}
-  cancel-in-progress: false
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   release:
@@ -28,9 +29,11 @@ jobs:
         run: |
           name=$(sed -n 's/^ *versionName = "\(.*\)"/\1/p' app/build.gradle.kts)
           code=$(sed -n 's/^ *versionCode = \([0-9]*\)/\1/p' app/build.gradle.kts)
+          home=$(sed -n 's/^ *versionName = "\(.*\)"/\1/p' home/build.gradle.kts)
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          if gh release view "v$name" > /dev/null 2>&1; then
+          echo "home=$home" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" != "pull_request" ] && gh release view "v$name" > /dev/null 2>&1; then
             echo "v$name is already released, nothing to do."
             echo "exists=true" >> "$GITHUB_OUTPUT"
           fi
@@ -50,20 +53,34 @@ jobs:
           if [ -z "$KEYSTORE_BASE64" ]; then echo "LIVINGROOM_KEYSTORE_BASE64 secret is missing"; exit 1; fi
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
           echo "LIVINGROOM_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-      - name: Build release APK
+      - name: Build release APKs
         if: steps.version.outputs.exists != 'true'
         env:
           LIVINGROOM_KEYSTORE_PASSWORD: ${{ secrets.LIVINGROOM_KEYSTORE_PASSWORD }}
           LIVINGROOM_KEY_ALIAS: livingroom
         run: |
           ./gradlew assembleRelease
-          apk=app/build/outputs/apk/release/app-release.apk
-          # Refuse to publish a debug-signed APK.
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
-          signer=$("$apksigner" verify --print-certs "$apk" | grep -m1 'certificate DN')
-          echo "$signer"
-          if echo "$signer" | grep -q 'CN=Android Debug'; then echo "APK is debug-signed"; exit 1; fi
-          cp "$apk" "Snug-${{ steps.version.outputs.name }}.apk"
+          # Refuse to publish a debug-signed APK.
+          for apk in app/build/outputs/apk/release/app-release.apk home/build/outputs/apk/release/home-release.apk; do
+            signer=$("$apksigner" verify --print-certs "$apk" | grep -m1 'certificate DN')
+            echo "$apk: $signer"
+            if echo "$signer" | grep -q 'CN=Android Debug'; then echo "$apk is debug-signed"; exit 1; fi
+          done
+          cp app/build/outputs/apk/release/app-release.apk "Snug-${{ steps.version.outputs.name }}.apk"
+          cp home/build/outputs/apk/release/home-release.apk "SnugHome-${{ steps.version.outputs.home }}.apk"
+      - uses: actions/upload-artifact@v4
+        if: steps.version.outputs.exists != 'true'
+        with:
+          name: Snug-${{ steps.version.outputs.name }}
+          path: Snug-*.apk
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: steps.version.outputs.exists != 'true'
+        with:
+          name: SnugHome-${{ steps.version.outputs.home }}
+          path: SnugHome-*.apk
+          retention-days: 14
       - name: Publish release
         if: steps.version.outputs.exists != 'true' && github.event_name != 'pull_request'
         env:
@@ -71,7 +88,7 @@ jobs:
           NAME: ${{ steps.version.outputs.name }}
           CODE: ${{ steps.version.outputs.code }}
         run: |
-          gh release create "v$NAME" "Snug-$NAME.apk" \
+          gh release create "v$NAME" "Snug-$NAME.apk" SnugHome-*.apk \
             --target "$GITHUB_SHA" \
             --title "Snug $NAME" \
-            --notes "Snug for Android TV, version $NAME (build $CODE). Download Snug-$NAME.apk below to install it on the TV box."
+            --notes "Snug for Android TV, version $NAME (build $CODE). Download Snug-$NAME.apk below to install it on the TV box. SnugHome-*.apk is the optional home screen."

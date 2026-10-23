@@ -12,8 +12,8 @@ android {
         applicationId = "tv.livingroom.watch"
         minSdk = 24
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.11.2"
+        versionCode = 19
+        versionName = "1.13.0"
     }
 
     // Release key: from ~/.gradle/gradle.properties locally, or environment variables in CI.

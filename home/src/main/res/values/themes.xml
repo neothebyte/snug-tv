@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window paints the only full-screen background; nothing in Compose paints another under it. -->
+    <style name="Theme.SnugHome" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#07080C</item>
+        <item name="android:colorBackground">#07080C</item>
+        <item name="android:statusBarColor">#07080C</item>
+        <item name="android:navigationBarColor">#07080C</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowShowWallpaper">false</item>
+    </style>
+</resources>
