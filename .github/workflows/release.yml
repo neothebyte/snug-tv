@@ -64,6 +64,10 @@ jobs:
           echo "$signer"
           if echo "$signer" | grep -q 'CN=Android Debug'; then echo "APK is debug-signed"; exit 1; fi
           cp "$apk" "Snug-${{ steps.version.outputs.name }}.apk"
+          # Snug Home (the launcher) ships beside Snug, under its own version.
+          home=home/build/outputs/apk/release/home-release.apk
+          homeName=$(sed -n 's/^ *versionName = "\(.*\)"/\1/p' home/build.gradle.kts)
+          cp "$home" "SnugHome-$homeName.apk"
       - name: Publish release
         if: steps.version.outputs.exists != 'true' && github.event_name != 'pull_request'
         env:
@@ -71,7 +75,7 @@ jobs:
           NAME: ${{ steps.version.outputs.name }}
           CODE: ${{ steps.version.outputs.code }}
         run: |
-          gh release create "v$NAME" "Snug-$NAME.apk" \
+          gh release create "v$NAME" "Snug-$NAME.apk" SnugHome-*.apk \
             --target "$GITHUB_SHA" \
             --title "Snug $NAME" \
-            --notes "Snug for Android TV, version $NAME (build $CODE). Download Snug-$NAME.apk below to install it on the TV box."
+            --notes "Snug for Android TV, version $NAME (build $CODE). Download Snug-$NAME.apk below to install it on the TV box. SnugHome-*.apk is the optional home screen."

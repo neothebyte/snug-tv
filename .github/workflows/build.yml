@@ -32,3 +32,7 @@ jobs:
         with:
           name: LivingRoomTV
           path: app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SnugHome
+          path: home/build/outputs/apk/release/home-release.apk

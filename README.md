@@ -122,3 +122,9 @@ app/src/main/java/tv/livingroom/watch/
 ## Name and logo
 
 The app was called Living Room until version 1.8.1. The couch logo's sources are in `branding/` (`snug-icon.svg`, `snug-banner.svg`). The package id stays `tv.livingroom.watch`, so existing installs update in place.
+
+## Snug Home
+
+`home/` is a second, optional app: a simple home screen for the box in the style of Apple TV. The apps sit in rows of five, and a top shelf above them shows what the focused app is; for Snug it shows what you were watching and what's new, read from Snug (`content://tv.livingroom.watch.shelf`, open only to apps signed with Snug's key). It talks to nothing but your Jellyfin server, keeps no account and sends nothing anywhere. Hold OK on an app to move it. The TV's own Settings is the last tile.
+
+Install `SnugHome-*.apk` from the release, then set it as the home screen: Settings → Apps → Default apps → Home app (or the TV will ask the next time the Home button is pressed). To go back, pick the original launcher there again.
