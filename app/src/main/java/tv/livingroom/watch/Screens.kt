@@ -1751,7 +1751,7 @@ private fun FolderPicker(vm: AppModel, onClose: () -> Unit) {
                     }
                 } else {
                     item {
-                        TvButton("Find it by itself (a Movies folder at the top)", Modifier.fillMaxWidth(), selected = vm.drive.folder.isBlank(), focusRequester = first) {
+                        TvButton("Find it by itself (a Movies or Films folder at the top)", Modifier.fillMaxWidth(), selected = vm.drive.folder.isBlank(), focusRequester = first) {
                             vm.chooseFolder(null)
                             onClose()
                         }

@@ -48,13 +48,47 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 
 Snug can also play films straight off a USB drive plugged into the TV box, with no Jellyfin server. Pick **USB drive** on the server screen, or **Settings → Play from a USB drive**. Jellyfin stays signed in underneath: **Settings → Use Jellyfin instead** goes straight back to it.
 
-- Snug reads one movies folder on the drive. By itself it uses a `Movies` (or `Films`) folder at the top of the drive; to use another, pick it in **Settings → Movies folder**, which lists the drive's folders as you open them. Snug doesn't read anything outside that folder.
+- Snug reads one movies folder on the drive (see [Choosing the movies folder](#choosing-the-movies-folder)). It doesn't read anything outside that folder.
 - Films can be in A to Z folders, each in a folder named `Title (Year) [tags]` (the YTS style), or loose files named the same way. `.srt` files beside the film or in a `Subs` folder are its subtitles; subtitles inside the file work too, including image ones.
 - Posters, backdrops, logos, plots, cast and genres come from [TMDB](https://www.themoviedb.org). Put a free TMDB API key in **Settings → TMDB key**, or send it from a computer: `adb shell am start -n tv.livingroom.watch/.MainActivity --es tmdbKey KEY`. Details are kept on the box, so the library still shows with the drive unplugged.
 - Continue watching, where each film stopped, watched marks and favourites are kept on the box. Snug Home's shelf and the TV's Play next row show the drive's films too.
 - Android has to let Snug read the drive ("All files access"). Where the box has no screen for that, run once: `adb shell appops set --uid tv.livingroom.watch MANAGE_EXTERNAL_STORAGE allow`.
 - Files play as they are, since there's no server to convert them.
 - On the Xiaomi TV Box S, the USB port only reads drives while USB debugging and Wireless debugging are both off.
+
+### Choosing the movies folder
+
+Your drive can hold anything else besides films: Snug only reads the one folder you give it.
+
+**Found by itself.** If you don't choose a folder, Snug looks at the folders at the very top of the drive for one named `Movies`, `Movie`, `Films` or `Film`. Upper or lower case doesn't matter (`MOVIES` and `movie` both work). Only the names of the top folders are looked at, never what is inside the others. A folder deeper down, such as `Media/Movies`, isn't found by itself; choose it as below.
+
+**Choosing it yourself.**
+
+1. Plug the drive into the box.
+2. Open **Settings → Movies folder**. It lists the plugged-in drives.
+3. Pick the drive, then open folders with OK until you reach the one that holds your films. Back goes up a folder.
+4. Press **Use this folder**. Snug lists the films in it straight away.
+
+To go back to finding it by itself, open **Settings → Movies folder** and pick **Find it by itself** at the top of the list.
+
+Snug remembers the folder as a path from the top of the drive (for example `Media/Videos/Movies`), so it still works after you unplug the drive, after a restart, or with another drive that has the same folders. If the folder isn't on the plugged-in drive, **Settings → Movie drive** says "No movies folder".
+
+Snug checks the folder again whenever the drive is plugged in and whenever you come back to Snug (at most once a minute), so films you add or delete show up by themselves. Pressing **Settings → Movie drive** checks it straight away.
+
+A layout that works well:
+
+```
+Movies/
+  The Matrix (1999) [1080p]/
+    The.Matrix.1999.1080p.mkv
+    The.Matrix.1999.1080p.en.srt
+    Subs/
+      2_English.srt
+  Inception (2010).mp4
+  Inception (2010).en.srt
+```
+
+Folders inside it (an A to Z split, for example) are fine, up to four levels deep. In a film's own folder the biggest video is the film; anything named `sample` or `trailer`, and `Extras`, `Featurettes` or `Trailers` folders, are left out. A `poster.jpg` or `folder.jpg` next to the film is used when TMDB has no poster.
 
 ## Remote controls
 
