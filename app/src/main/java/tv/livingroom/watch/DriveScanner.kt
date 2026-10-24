@@ -24,7 +24,7 @@ data class DriveFilm(
 data class ParsedName(val title: String, val year: Int?)
 
 /**
- * Finds the films in the Movies folder of the drive. It only ever looks inside that folder: the rest
+ * Finds the films in the movies folder of the drive. It only ever looks inside that folder: the rest
  * of the drive is someone's own files, so nothing above or beside it is listed or opened.
  *
  * Films are usually in a folder of their own named "Title (Year) [tags]", possibly inside A to Z
@@ -32,9 +32,6 @@ data class ParsedName(val title: String, val year: Int?)
  * are its subtitles. A video sitting loose is a film of its own, named after its file.
  */
 object DriveScanner {
-    /** Where the films are on the drive, from its top. */
-    const val MOVIES_PATH = "001. Personal/02. Media/02. Videos/01. Movies"
-
     private const val MAX_DEPTH = 4
     private const val MIN_FEATURE_BYTES = 40L * 1024 * 1024
     private val VIDEO = setOf("mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm")
