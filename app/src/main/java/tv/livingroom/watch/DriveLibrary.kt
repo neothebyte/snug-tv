@@ -43,8 +43,12 @@ class DriveException(message: String) : Exception(message)
 data class DriveStatus(
     /** Snug may read the drive (Android's "All files access"). */
     val access: Boolean = false,
-    /** The Movies folder was found on a plugged-in drive. */
+    /** The movies folder was found on a plugged-in drive. */
     val plugged: Boolean = false,
+    /** Some drive is plugged in, whether or not the movies folder is on it. */
+    val driveIn: Boolean = false,
+    /** The movies folder as shown in Settings: the one chosen, else what was found by itself. */
+    val folder: String = "",
     val films: Int = 0,
     /** Films still being looked up on TMDB. */
     val matching: Int = 0,
@@ -55,7 +59,7 @@ data class DriveStatus(
 
 /**
  * Drive mode: films straight off a USB drive plugged into the box, with no Jellyfin server. The drive is
- * scanned for films (only inside [DriveScanner.MOVIES_PATH]), TMDB fills in posters and plots, and
+ * scanned for films (only inside the movies folder, see [folder]), TMDB fills in posters and plots, and
  * everything Jellyfin would keep per viewer (where each film was stopped, watched, favourite) is kept
  * here on the box. The last scan is kept too, so the library still shows while the drive is unplugged.
  */
@@ -97,6 +101,16 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
             synchronized(lock) { meta.entries.removeAll { it.value.optBoolean("none") } }
             publish()
             match()
+        }
+
+    /**
+     * The movies folder, from the top of the drive, as chosen in Settings. Blank means Snug looks for
+     * one by itself (see [AUTO_FOLDERS]).
+     */
+    var folder: String
+        get() = prefs.getString(KEY_FOLDER, null).orEmpty()
+        private set(value) {
+            prefs.edit().putString(KEY_FOLDER, value.trim('/')).apply()
         }
 
     init {
@@ -143,20 +157,42 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
     }
 
     /**
-     * The Movies folder on whichever plugged-in drive has it. Only that one path is checked on each
-     * drive; nothing else on it is listed.
+     * The movies folder on whichever plugged-in drive has it: the chosen one, else the first of
+     * [AUTO_FOLDERS]. Only those paths are checked on each drive; nothing else on it is listed.
      */
     private fun findRoot(): File? {
-        val tops = LinkedHashSet<File>()
+        val chosen = folder
+        val paths = if (chosen.isNotBlank()) listOf(chosen) else AUTO_FOLDERS
+        val tops = drives().map { it.second }
+        return paths.firstNotNullOfOrNull { path -> tops.map { File(it, path) }.firstOrNull { it.isDirectory } }
+    }
+
+    /** Plugged-in drives, with the name the box gives each, for choosing the movies folder. */
+    fun drives(): List<Pair<String, File>> {
+        val found = LinkedHashMap<String, Pair<String, File>>()
         val storage = context.getSystemService(StorageManager::class.java)
         storage?.storageVolumes?.forEach { volume ->
             if (volume.isPrimary) return@forEach
             if (volume.state != Environment.MEDIA_MOUNTED && volume.state != Environment.MEDIA_MOUNTED_READ_ONLY) return@forEach
-            volumeDir(volume)?.let { tops += it }
+            val dir = volumeDir(volume) ?: return@forEach
+            found[dir.path] = (volume.getDescription(context)?.takeIf { it.isNotBlank() } ?: dir.name) to dir
         }
         // Some boxes leave USB drives out of the list above; they are still mounted under /storage.
-        File("/storage").listFiles()?.filter { it.isDirectory && it.name != "emulated" && it.name != "self" }?.let { tops += it }
-        return tops.map { File(it, DriveScanner.MOVIES_PATH) }.firstOrNull { it.isDirectory }
+        File("/storage").listFiles()?.filter { it.isDirectory && it.name != "emulated" && it.name != "self" && it.canRead() }?.forEach { dir ->
+            if (dir.path !in found) found[dir.path] = dir.name to dir
+        }
+        return found.values.toList()
+    }
+
+    /** The folders inside [dir], for choosing the movies folder. Only listed when someone opens [dir] to look. */
+    fun subfolders(dir: File): List<File> =
+        dir.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") }?.sortedBy { it.name.lowercase(Locale.ROOT) }.orEmpty()
+
+    /** Makes [dir] the movies folder and scans it. Null goes back to finding one by itself. Blocking. */
+    fun useFolder(dir: File?) {
+        folder = if (dir == null) "" else drives().map { it.second }.firstOrNull { dir.isInside(it) }?.let { dir.relativeTo(it).path.ifEmpty { "." } }.orEmpty()
+        root = null
+        scan(force = true)
     }
 
     private fun volumeDir(volume: android.os.storage.StorageVolume): File? =
@@ -182,9 +218,13 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
 
     private fun publish() {
         val (count, missing) = synchronized(lock) { films.size to films.count { needsMeta(it) } }
+        val access = hasAccess()
+        val top = root
         _status.value = DriveStatus(
-            access = hasAccess(),
-            plugged = root != null,
+            access = access,
+            plugged = top != null,
+            driveIn = top != null || (access && drives().isNotEmpty()),
+            folder = folder.ifBlank { top?.let { found -> drives().map { it.second }.firstOrNull { found.isInside(it) }?.let { found.relativeTo(it).path } }.orEmpty() },
             films = count,
             matching = if (matchingNow.get()) missing else 0,
             hasKey = tmdbKey.isNotBlank(),
@@ -695,6 +735,12 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
         const val STATE = "watched.json"
         const val PROBES = "tracks.json"
         const val KEY_TMDB = "tmdbKey"
+        const val KEY_FOLDER = "moviesFolder"
+        /**
+         * Where Snug looks for films until a folder is chosen: a Movies or Films folder at the top of
+         * the drive, then the layout Snug 1.15.0 was made for.
+         */
+        val AUTO_FOLDERS = listOf("Movies", "movies", "MOVIES", "Films", "films", "001. Personal/02. Media/02. Videos/01. Movies")
         /** Subtitle files beside a film are numbered from here, after the file's own tracks. */
         const val EXTERNAL_BASE = 1000
         const val RESCAN_MS = 60_000L
@@ -704,6 +750,8 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
         const val UNPLUGGED = "The movie drive isn't plugged in. Plug it in (with USB and Wireless debugging off), then try again."
     }
 }
+
+private fun File.isInside(top: File): Boolean = path == top.path || path.startsWith(top.path.trimEnd('/') + "/")
 
 private fun JSONArray?.strings(): List<String> {
     if (this == null) return emptyList()

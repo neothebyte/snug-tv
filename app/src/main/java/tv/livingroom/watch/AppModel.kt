@@ -1096,6 +1096,16 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Makes [dir] the movies folder on the drive, or goes back to finding one by itself when null. */
+    fun chooseFolder(dir: java.io.File?) {
+        message = "Scanning the drive…"
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { drive.useFolder(dir) }
+            message = if (drive.status.value.plugged) "" else "No movies folder found there."
+            refresh()
+        }
+    }
+
     fun setTmdbKey(key: String) {
         viewModelScope.launch(Dispatchers.IO) { drive.tmdbKey = key }
     }

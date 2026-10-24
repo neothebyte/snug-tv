@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -692,8 +693,9 @@ private fun EmptyLibrary(vm: AppModel) {
                 when {
                     !vm.driveMode -> "If the movie drive isn't mounted, plug it in and restart Jellyfin."
                     !status.access -> "Snug needs permission to read the USB drive."
-                    !status.plugged -> "Plug in the movie drive. The box only sees USB drives while USB and Wireless debugging are off."
-                    else -> "No films were found in ${DriveScanner.MOVIES_PATH.substringAfterLast('/')} on the drive."
+                    !status.driveIn -> "Plug in the movie drive. The box only sees USB drives while USB and Wireless debugging are off."
+                    !status.plugged -> "Snug didn't find a Movies folder on the drive. Choose yours in Settings → Movies folder."
+                    else -> "No films were found in ${status.folder.substringAfterLast('/')} on the drive."
                 }
             },
             style = TvType.body,
@@ -1455,6 +1457,7 @@ private fun SettingsScreen(vm: AppModel) {
     var askServer by remember { mutableStateOf(false) }
     var askSignOut by remember { mutableStateOf(false) }
     var askTmdb by remember { mutableStateOf(false) }
+    var pickFolder by remember { mutableStateOf(false) }
     val cueNames = listOf(1f to "Small", 1.35f to "Medium", 1.7f to "Large", 2.1f to "Extra large")
     LazyColumn(
         contentPadding = PaddingValues(top = SafeY, bottom = 48.dp),
@@ -1515,15 +1518,19 @@ private fun SettingsScreen(vm: AppModel) {
                     "Movie drive",
                     when {
                         !status.access -> "Not allowed yet"
-                        !status.plugged -> "Not plugged in"
+                        !status.driveIn -> "Not plugged in"
+                        !status.plugged -> "No movies folder"
                         status.matching > 0 -> "${status.films} films · finding ${status.matching}…"
                         else -> "${status.films} films"
                     }
                 ) { vm.rescanDrive() }
             }
             item {
+                SettingRow("Movies folder", vm.driveStatus.folder.ifBlank { "Found by itself" }.substringAfterLast('/')) { pickFolder = true }
+            }
+            item {
                 Text(
-                    "Snug only reads ${DriveScanner.MOVIES_PATH} on the drive. Press to scan it again.",
+                    "Snug only reads ${vm.driveStatus.folder.ifBlank { "the Movies folder" }} on the drive. Press Movie drive to scan it again.",
                     style = TvType.small,
                     modifier = Modifier.padding(start = 4.dp)
                 )
@@ -1606,6 +1613,7 @@ private fun SettingsScreen(vm: AppModel) {
             if (it == 0) vm.signOut()
         }
     }
+    if (pickFolder) FolderPicker(vm) { pickFolder = false }
     if (askTmdb) {
         TextEntryDialog(
             "TMDB API key",
@@ -1659,7 +1667,7 @@ private fun DriveAccessDialog(vm: AppModel) {
             Text("Let Snug read the USB drive", style = TvType.headline)
             Spacer(Modifier.height(12.dp))
             Text(
-                "Snug only opens the Movies folder (${DriveScanner.MOVIES_PATH}), but Android asks for access to the whole drive.",
+                "Snug only opens your movies folder, but Android asks for access to the whole drive.",
                 style = TvType.body
             )
             Spacer(Modifier.height(10.dp))
@@ -1682,6 +1690,81 @@ private fun DriveAccessDialog(vm: AppModel) {
                 }
                 TvButton("Check again") { vm.checkDrive() }
                 TvButton("Use Jellyfin instead") { vm.leaveDrive() }
+            }
+        }
+    }
+}
+
+/**
+ * Chooses the movies folder on the drive: the plugged-in drives first, then the folders inside the one
+ * opened. Only the folders someone opens here are listed.
+ */
+@Composable
+private fun FolderPicker(vm: AppModel, onClose: () -> Unit) {
+    var at by remember { mutableStateOf<java.io.File?>(null) }
+    var rows by remember { mutableStateOf<List<Pair<String, java.io.File>>?>(null) }
+    LaunchedEffect(at) {
+        rows = null
+        val here = at
+        rows = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            if (here == null) vm.drive.drives() else vm.drive.subfolders(here).map { it.name to it }
+        }
+    }
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val first = remember(at) { FocusRequester() }
+        LaunchedEffect(at, rows) {
+            if (rows == null) return@LaunchedEffect
+            delay(60)
+            runCatching { first.requestFocus() }
+        }
+        Column(
+            Modifier
+                .width(560.dp)
+                .heightIn(max = 480.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color(0xF2181A21))
+                .border(1.dp, Line, RoundedCornerShape(22.dp))
+                .padding(24.dp)
+        ) {
+            Text("Movies folder", style = TvType.headline)
+            Text(
+                at?.path?.let { path -> vm.drive.drives().firstOrNull { path.startsWith(it.second.path) }?.let { (name, top) -> name + path.removePrefix(top.path) } ?: path }
+                    ?: "Pick the drive, then open folders until you reach the one with your films.",
+                style = TvType.small,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 6.dp, bottom = 12.dp)
+            )
+            BackHandler(enabled = at != null) {
+                val here = at
+                val atTop = vm.drive.drives().any { it.second.path == here?.path }
+                at = if (atTop) null else here?.parentFile
+            }
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                val here = at
+                if (here != null) {
+                    item {
+                        TvButton("Use this folder", Modifier.fillMaxWidth(), primary = true, focusRequester = first) {
+                            vm.chooseFolder(here)
+                            onClose()
+                        }
+                    }
+                } else {
+                    item {
+                        TvButton("Find it by itself (a Movies folder at the top)", Modifier.fillMaxWidth(), selected = vm.drive.folder.isBlank(), focusRequester = first) {
+                            vm.chooseFolder(null)
+                            onClose()
+                        }
+                    }
+                }
+                val list = rows
+                when {
+                    list == null -> item { Text("Looking…", style = TvType.body) }
+                    list.isEmpty() -> item { Text(if (here == null) "No drive is plugged in." else "No folders in here.", style = TvType.body) }
+                    else -> items(list, key = { it.second.path }) { (name, dir) ->
+                        TvButton(name, Modifier.fillMaxWidth(), icon = R.drawable.ic_movies) { at = dir }
+                    }
+                }
             }
         }
     }

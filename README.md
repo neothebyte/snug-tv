@@ -48,7 +48,7 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 
 Snug can also play films straight off a USB drive plugged into the TV box, with no Jellyfin server. Pick **USB drive** on the server screen, or **Settings → Play from a USB drive**. Jellyfin stays signed in underneath: **Settings → Use Jellyfin instead** goes straight back to it.
 
-- Snug only reads `001. Personal/02. Media/02. Videos/01. Movies/` on the drive. Nothing else on it is listed or opened.
+- Snug reads one movies folder on the drive. By itself it uses a `Movies` (or `Films`) folder at the top of the drive; to use another, pick it in **Settings → Movies folder**, which lists the drive's folders as you open them. Snug doesn't read anything outside that folder.
 - Films can be in A to Z folders, each in a folder named `Title (Year) [tags]` (the YTS style), or loose files named the same way. `.srt` files beside the film or in a `Subs` folder are its subtitles; subtitles inside the file work too, including image ones.
 - Posters, backdrops, logos, plots, cast and genres come from [TMDB](https://www.themoviedb.org). Put a free TMDB API key in **Settings → TMDB key**, or send it from a computer: `adb shell am start -n tv.livingroom.watch/.MainActivity --es tmdbKey KEY`. Details are kept on the box, so the library still shows with the drive unplugged.
 - Continue watching, where each film stopped, watched marks and favourites are kept on the box. Snug Home's shelf and the TV's Play next row show the drive's films too.
@@ -70,11 +70,11 @@ Snug can also play films straight off a USB drive plugged into the TV box, with 
 
 ## Install
 
-Download `Snug-<version>.apk` (for example `Snug-1.15.0.apk`) from the [latest release](https://github.com/neothebyte/snug-tv/releases/latest), then sideload it:
+Download `Snug-<version>.apk` (for example `Snug-1.15.1.apk`) from the [latest release](https://github.com/neothebyte/snug-tv/releases/latest), then sideload it:
 
 ```bash
 adb connect <tv-address>:5555
-adb install -r Snug-1.15.0.apk
+adb install -r Snug-1.15.1.apk
 ```
 
 The optional [home screen](#snug-home) has its own releases, tagged `home-v<version>` (see [Snug Home releases](https://github.com/neothebyte/snug-tv/releases?q=home-v&expanded=true)).
