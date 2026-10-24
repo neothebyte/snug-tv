@@ -1,8 +1,8 @@
 name: Release
 
 # One build per push: on pull requests it builds and signs both APKs and keeps them as artifacts, as a check;
-# on main it also publishes them as a GitHub Release whenever the version (versionName in app/build.gradle.kts)
-# doesn't have one yet. (Build and Release used to be two workflows doing the same Gradle build twice, which
+# on main it also publishes each app as its own GitHub Release whenever its version doesn't have one yet:
+# Snug as v<versionName> (app/build.gradle.kts) and Snug Home as home-v<versionName> (home/build.gradle.kts). (Build and Release used to be two workflows doing the same Gradle build twice, which
 # burned the account's free Actions minutes at double speed.)
 on:
   push:
@@ -33,9 +33,15 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "home=$home" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" != "pull_request" ] && gh release view "v$name" > /dev/null 2>&1; then
-            echo "v$name is already released, nothing to do."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            gh release view "v$name" > /dev/null 2>&1 && app_done=true || app_done=false
+            gh release view "home-v$home" > /dev/null 2>&1 && home_done=true || home_done=false
+            echo "app_done=$app_done" >> "$GITHUB_OUTPUT"
+            echo "home_done=$home_done" >> "$GITHUB_OUTPUT"
+            if [ "$app_done" = true ] && [ "$home_done" = true ]; then
+              echo "v$name and home-v$home are already released, nothing to do."
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
       - uses: actions/setup-java@v4
         if: steps.version.outputs.exists != 'true'
@@ -81,14 +87,26 @@ jobs:
           name: SnugHome-${{ steps.version.outputs.home }}
           path: SnugHome-*.apk
           retention-days: 14
-      - name: Publish release
-        if: steps.version.outputs.exists != 'true' && github.event_name != 'pull_request'
+      - name: Publish Snug release
+        if: steps.version.outputs.exists != 'true' && github.event_name != 'pull_request' && steps.version.outputs.app_done != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NAME: ${{ steps.version.outputs.name }}
           CODE: ${{ steps.version.outputs.code }}
         run: |
-          gh release create "v$NAME" "Snug-$NAME.apk" SnugHome-*.apk \
+          gh release create "v$NAME" "Snug-$NAME.apk" \
             --target "$GITHUB_SHA" \
             --title "Snug $NAME" \
-            --notes "Snug for Android TV, version $NAME (build $CODE). Download Snug-$NAME.apk below to install it on the TV box. SnugHome-*.apk is the optional home screen."
+            --notes "Snug for Android TV, version $NAME (build $CODE). Download Snug-$NAME.apk below to install it on the TV box. Snug Home, the optional home screen, has its own releases (home-v…)."
+      # Snug Home's releases never become the repository's "latest", so /releases/latest stays Snug.
+      - name: Publish Snug Home release
+        if: steps.version.outputs.exists != 'true' && github.event_name != 'pull_request' && steps.version.outputs.home_done != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOME_NAME: ${{ steps.version.outputs.home }}
+        run: |
+          gh release create "home-v$HOME_NAME" "SnugHome-$HOME_NAME.apk" \
+            --target "$GITHUB_SHA" \
+            --latest=false \
+            --title "Snug Home $HOME_NAME" \
+            --notes "Snug Home, an optional home screen for the TV box, version $HOME_NAME. Download SnugHome-$HOME_NAME.apk below; see the README for making it the home screen on Google TV."
