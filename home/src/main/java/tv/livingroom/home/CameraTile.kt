@@ -55,7 +55,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import kotlinx.coroutines.delay
 import tv.livingroom.ui.FocusScale
 import tv.livingroom.ui.Motion
@@ -188,8 +189,8 @@ private fun rememberCameraPlayer(url: String, play: Boolean): Pair<ExoPlayer?, C
         // A live picture: start as soon as there's a moment of it, and stay close behind.
         val loadControl = DefaultLoadControl.Builder().setBufferDurationsMs(500, 2_000, 250, 250).build()
         val exo = ExoPlayer.Builder(context).setLoadControl(loadControl).build()
-        // Without the sound track. Cameras such as Xiaomi's send Opus, which Media3's RTSP reader fails on
-        // ("ID Header missing") and takes the picture down with it; disabled, it isn't even set up.
+        // Without the sound track: the tile is silent, and cameras such as Xiaomi's send Opus, which go2rtc's
+        // MP4 may or may not carry. Disabled, it can't take the picture down with it.
         exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
             .build()
@@ -202,8 +203,9 @@ private fun rememberCameraPlayer(url: String, play: Boolean): Pair<ExoPlayer?, C
                 state = CameraState.Offline
             }
         })
-        // Over TCP: on Wi-Fi, UDP loses pieces of the picture and smears it.
-        exo.setMediaSource(RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url)))
+        // go2rtc's endless fragmented MP4: one long HTTP response, read as it arrives.
+        val http = DefaultHttpDataSource.Factory().setConnectTimeoutMs(5_000).setReadTimeoutMs(10_000)
+        exo.setMediaSource(ProgressiveMediaSource.Factory(http).createMediaSource(MediaItem.fromUri(url)))
         exo.playWhenReady = true
         exo.prepare()
         player = exo

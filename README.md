@@ -227,8 +227,8 @@ Snug Home shows a camera that [go2rtc](https://github.com/AlexxIT/go2rtc) stream
 - There is nothing to set up on the TV. Snug Home looks for go2rtc on its usual port (1984) on the box's own network, then remembers where it found it. With no go2rtc on the network, there is no tile.
 - It shows the first stream in go2rtc's list, named after it: a stream called `living_room` shows as "Living room". If there is also a stream called `living_room_sd` (the camera's lighter, lower-resolution stream), the tile plays that one, which is easier on a small box.
 - The tile plays only while the home screen is showing. Select it and press OK to watch it full screen; Back closes it.
-- It shows the picture only, without sound: many cameras (Xiaomi's among them) send Opus sound, which the player can't read over RTSP.
-- go2rtc's streams are H.265 or H.264 over RTSP (port 8554). Most TV boxes decode both in hardware.
+- It shows the picture only, without sound: many cameras (Xiaomi's among them) send Opus sound, which the player can't use.
+- The picture comes as MP4 over HTTP from go2rtc's API (`/api/stream.mp4`), not RTSP: Android's RTSP player can't read the H.265 some cameras send. H.265 and H.264 both work, and most TV boxes decode them in hardware.
 
 ### Sharing Snug Home with others
 

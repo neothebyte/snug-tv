@@ -2,6 +2,7 @@ package tv.livingroom.home
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Uri
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.URL
@@ -69,16 +70,16 @@ object CameraSource {
     private fun probe(host: String): Pair<Camera, String>? {
         val api = get("http://$host:$API_PORT/api", connectTimeout = 400)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return null
         if (!api.has("version")) return null
-        val rtspPort = api.optJSONObject("rtsp")?.optString("listen")?.substringAfterLast(':')?.toIntOrNull() ?: 8554
         val streams = get("http://$host:$API_PORT/api/streams", connectTimeout = 1500)
             ?.let { runCatching { JSONObject(it) }.getOrNull() }
             ?.keys()?.asSequence()?.toSet().orEmpty()
         val main = streams.filterNot { it.endsWith("_sd") }.sorted().firstOrNull() ?: return null
         val light = "${main}_sd".takeIf { it in streams } ?: main
-        val base = "rtsp://$host:$rtspPort"
-        // No `?video` on the address to leave the sound out: Media3 puts the query after the track too
-        // (`/trackID=0?video`), and go2rtc answers that SETUP with 400. The player drops the sound instead.
-        return Camera(displayName(main), "$base/$light", "$base/$main") to host
+        // As MP4 over HTTP rather than RTSP: Media3's RTSP reader can't take the H.265 aggregation packets
+        // Xiaomi cameras send ("need to implement processAggregationPacket"). go2rtc leaves sound it can't put
+        // in MP4 out by itself.
+        val base = "http://$host:$API_PORT/api/stream.mp4?src="
+        return Camera(displayName(main), base + Uri.encode(light), base + Uri.encode(main)) to host
     }
 
     /** "living_room" reads as "Living room". */
