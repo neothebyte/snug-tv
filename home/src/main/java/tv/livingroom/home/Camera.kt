@@ -76,8 +76,9 @@ object CameraSource {
         val main = streams.filterNot { it.endsWith("_sd") }.sorted().firstOrNull() ?: return null
         val light = "${main}_sd".takeIf { it in streams } ?: main
         val base = "rtsp://$host:$rtspPort"
-        // The tile is muted, so it asks for the picture only.
-        return Camera(displayName(main), "$base/$light?video", "$base/$main") to host
+        // No `?video` on the address to leave the sound out: Media3 puts the query after the track too
+        // (`/trackID=0?video`), and go2rtc answers that SETUP with 400. The player drops the sound instead.
+        return Camera(displayName(main), "$base/$light", "$base/$main") to host
     }
 
     /** "living_room" reads as "Living room". */

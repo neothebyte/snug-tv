@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -67,11 +68,11 @@ private enum class CameraState { Connecting, Live, Offline }
 
 /**
  * The camera's picture, small, in the top right of the shelf: muted, and only playing while it's on screen.
- * OK opens it full screen with sound.
+ * OK opens it full screen.
  */
 @Composable
 fun CameraTile(camera: Camera, play: Boolean, modifier: Modifier, onOpen: () -> Unit) {
-    val (player, state) = rememberCameraPlayer(camera.tileUrl, play, withSound = false)
+    val (player, state) = rememberCameraPlayer(camera.tileUrl, play)
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) FocusScale.Card else 1f, Motion.focus(), label = "camera")
     Box(
@@ -102,14 +103,14 @@ fun CameraTile(camera: Camera, play: Boolean, modifier: Modifier, onOpen: () -> 
     }
 }
 
-/** The camera over the whole screen, with sound. Back closes it. */
+/** The camera over the whole screen. Back closes it. */
 @Composable
 fun CameraFullScreen(camera: Camera, onClose: () -> Unit) {
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
-        val (player, state) = rememberCameraPlayer(camera.fullUrl, play = true, withSound = true)
+        val (player, state) = rememberCameraPlayer(camera.fullUrl, play = true)
         var showHint by remember { mutableStateOf(true) }
         LaunchedEffect(Unit) {
             delay(4_000)
@@ -170,12 +171,12 @@ private fun CameraStatus(state: CameraState, modifier: Modifier) {
 }
 
 /**
- * A player for one camera stream, alive only while [play] is true, so the box's small memory isn't spent on a
+ * A player for one camera stream, picture only, alive only while [play] is true, so the box's small memory isn't spent on a
  * picture nobody sees. A stream that drops out is tried again every few seconds.
  */
 @OptIn(UnstableApi::class)
 @Composable
-private fun rememberCameraPlayer(url: String, play: Boolean, withSound: Boolean): Pair<ExoPlayer?, CameraState> {
+private fun rememberCameraPlayer(url: String, play: Boolean): Pair<ExoPlayer?, CameraState> {
     val context = LocalContext.current
     var state by remember(url) { mutableStateOf(CameraState.Connecting) }
     var attempt by remember(url) { mutableIntStateOf(0) }
@@ -187,7 +188,11 @@ private fun rememberCameraPlayer(url: String, play: Boolean, withSound: Boolean)
         // A live picture: start as soon as there's a moment of it, and stay close behind.
         val loadControl = DefaultLoadControl.Builder().setBufferDurationsMs(500, 2_000, 250, 250).build()
         val exo = ExoPlayer.Builder(context).setLoadControl(loadControl).build()
-        exo.volume = if (withSound) 1f else 0f
+        // Without the sound track. Cameras such as Xiaomi's send Opus, which Media3's RTSP reader fails on
+        // ("ID Header missing") and takes the picture down with it; disabled, it isn't even set up.
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+            .build()
         exo.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) state = CameraState.Live
