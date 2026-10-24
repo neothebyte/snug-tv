@@ -18,7 +18,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -38,6 +40,8 @@ class HomeActivity : ComponentActivity() {
     private var lastInput = SystemClock.uptimeMillis()
     private var stopWatchingShelf: () -> Unit = {}
     private var shelfJob: Job? = null
+    private var weather by mutableStateOf<Weather?>(null)
+    private var weatherAt = 0L
 
     // Installs, updates and uninstalls change the tiles straight away.
     private val packages = object : BroadcastReceiver() {
@@ -69,6 +73,7 @@ class HomeActivity : ComponentActivity() {
             HomeScreen(
                 apps = apps,
                 shelf = shelf,
+                weather = weather,
                 resetSignal = resetSignal,
                 network = network,
                 ambient = ambient,
@@ -103,6 +108,20 @@ class HomeActivity : ComponentActivity() {
         }
         stopWatchingShelf = SnugShelf.watch(applicationContext) { reloadShelf() }
         watchIdle()
+        weather = WeatherSource.cached(applicationContext)
+        // Every half hour while the home screen is showing, and straight away when coming back to it after that.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    val wait = WEATHER_EVERY - (System.currentTimeMillis() - weatherAt)
+                    if (wait > 0) delay(wait)
+                    val fresh = withContext(Dispatchers.IO) { WeatherSource.load(applicationContext) }
+                    if (fresh != null) weather = fresh
+                    // A failed fetch tries again in five minutes rather than half an hour.
+                    weatherAt = System.currentTimeMillis() - if (fresh == null) WEATHER_EVERY - WEATHER_RETRY else 0L
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -164,6 +183,8 @@ class HomeActivity : ComponentActivity() {
 
     private companion object {
         const val AMBIENT_AFTER_MS = 5 * 60_000L
+        const val WEATHER_EVERY = 30 * 60 * 1000L
+        const val WEATHER_RETRY = 5 * 60 * 1000L
     }
 }
 

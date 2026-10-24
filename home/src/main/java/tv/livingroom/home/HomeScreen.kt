@@ -100,6 +100,7 @@ private val TileShape = RoundedCornerShape(10.dp)
 fun HomeScreen(
     apps: List<TvApp>,
     shelf: List<ShelfItem>,
+    weather: Weather?,
     resetSignal: Int,
     network: NetworkState,
     ambient: Boolean,
@@ -233,14 +234,16 @@ fun HomeScreen(
             }
         }
 
-        Row(
-            Modifier.align(Alignment.TopEnd).padding(top = SafeY, end = SafeX),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            NetworkMark(network)
-            Clock(Modifier)
-        }
+        StatusCorner(
+            weather = weather,
+            clock = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NetworkMark(network)
+                    Clock(Modifier)
+                }
+            },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = SafeY, end = SafeX)
+        )
 
         // Once, until it's been used: how to get to Move and Hide.
         val showHint = !hintSeen && moving == null && apps.size > 1 && !onShelf && focusedRow == 0
