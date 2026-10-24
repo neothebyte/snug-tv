@@ -67,6 +67,20 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import java.util.Date
 import kotlinx.coroutines.delay
+import android.text.format.DateUtils
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.graphics.painter.ColorPainter
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import tv.livingroom.ui.FocusScale
+import tv.livingroom.ui.Motion
+import tv.livingroom.ui.drawFocusGlow
+import tv.livingroom.ui.rememberBlurHashPainter
 
 private const val COLUMNS = 5
 private val TileGap = 22.dp
@@ -86,10 +100,22 @@ fun HomeScreen(
     apps: List<TvApp>,
     shelf: List<ShelfItem>,
     resetSignal: Int,
+    network: NetworkState,
+    ambient: Boolean,
+    store: AppStore,
     onLaunch: (TvApp) -> Unit,
     onOpenItem: (ShelfItem) -> Unit,
-    onReorder: (List<TvApp>) -> Unit
+    onReorder: (List<TvApp>) -> Unit,
+    onHide: (TvApp) -> Unit,
+    onUnhide: (String) -> Unit,
+    onAppInfo: (TvApp) -> Unit
 ) {
+    // Long-pressing OK on a tile offers Move, Hide and App info; the Hidden apps tile lists what's hidden.
+    var options by remember { mutableStateOf<TvApp?>(null) }
+    var showHidden by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("home", android.content.Context.MODE_PRIVATE) }
+    var hintSeen by remember { mutableStateOf(prefs.getBoolean("optionsHintSeen", false)) }
     var order by remember { mutableStateOf(apps) }
     var moving by remember { mutableStateOf<String?>(null) }
     // While an app is being moved, the box's own list changes (an install, say) must not jump it around.
@@ -123,10 +149,10 @@ fun HomeScreen(
 
     val scroll by animateDpAsState(
         if (focusedRow == 0 || onShelf) 0.dp else -(GridTop - RowParked) - RowPitch * (focusedRow - 1),
-        animationSpec = tween(320),
+        animationSpec = Motion.slide(),
         label = "scroll"
     )
-    val shelfAlpha by animateFloatAsState(if (focusedRow == 0 || onShelf) 1f else 0f, tween(260), label = "shelf")
+    val shelfAlpha by animateFloatAsState(if (focusedRow == 0 || onShelf) 1f else 0f, Motion.fade(), label = "shelf")
 
     Box(Modifier.fillMaxSize()) {
         ShelfBackdrop(
@@ -145,6 +171,7 @@ fun HomeScreen(
                 ShelfFront(
                     owner = owner,
                     shelf = if (snugShelf) shelf else emptyList(),
+                    lastOpened = owner?.key?.let { store.lastOpened(it) } ?: 0L,
                     heroIndex = heroIndex,
                     snugRequester = requester(SNUG),
                     onCardFocus = { i -> heroIndex = i; onShelf = true },
@@ -169,7 +196,18 @@ fun HomeScreen(
                                     onShelf = false
                                     if (app.key != SNUG) heroIndex = 0
                                 },
-                                onClick = { onLaunch(app) },
+                                onClick = { if (app.key == HIDDEN_KEY) showHidden = true else onLaunch(app) },
+                                onOptions = {
+                                    if (app.key == HIDDEN_KEY) {
+                                        showHidden = true
+                                    } else {
+                                        options = app
+                                        if (!hintSeen) {
+                                            hintSeen = true
+                                            prefs.edit().putBoolean("optionsHintSeen", true).apply()
+                                        }
+                                    }
+                                },
                                 onStartMove = { moving = app.key },
                                 onMove = { step ->
                                     val from = order.indexOfFirst { it.key == app.key }
@@ -191,7 +229,29 @@ fun HomeScreen(
             }
         }
 
-        Clock(Modifier.align(Alignment.TopEnd).padding(top = SafeY, end = SafeX))
+        Row(
+            Modifier.align(Alignment.TopEnd).padding(top = SafeY, end = SafeX),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            NetworkMark(network)
+            Clock(Modifier)
+        }
+
+        // Once, until it's been used: how to get to Move and Hide.
+        val showHint = !hintSeen && moving == null && apps.size > 1 && !onShelf && focusedRow == 0
+        if (showHint) {
+            BasicText(
+                "Hold OK on an app to move or hide it",
+                style = HomeType.hint,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = SafeY)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xCC14161D))
+                    .padding(horizontal = 16.dp, vertical = 7.dp)
+            )
+        }
 
         if (moving != null) {
             BasicText(
@@ -205,6 +265,146 @@ fun HomeScreen(
                     .padding(horizontal = 16.dp, vertical = 7.dp)
             )
         }
+
+        AnimatedVisibility(ambient, enter = fadeIn(tween(900)), exit = fadeOut(tween(300))) {
+            Ambient(shelf)
+        }
+    }
+
+    options?.let { app ->
+        ChoiceDialog(
+            title = app.label,
+            choices = buildList {
+                add("Move")
+                if (app.key != SETTINGS_KEY) {
+                    add("Hide from home screen")
+                    add("App info")
+                }
+                add("Cancel")
+            },
+            onDismiss = { options = null }
+        ) { choice ->
+            options = null
+            when (choice) {
+                "Move" -> moving = app.key
+                "Hide from home screen" -> onHide(app)
+                "App info" -> onAppInfo(app)
+            }
+        }
+    }
+    if (showHidden) {
+        val hidden = remember { store.hiddenApps() }
+        ChoiceDialog(
+            title = "Hidden apps",
+            note = "Pick one to put it back on the home screen.",
+            choices = hidden.map { it.second } + "Done",
+            onDismiss = { showHidden = false }
+        ) { choice ->
+            showHidden = false
+            hidden.firstOrNull { it.second == choice }?.let { onUnhide(it.first) }
+        }
+    }
+}
+
+/** A short list to pick from, in a panel over the home screen. */
+@Composable
+private fun ChoiceDialog(title: String, choices: List<String>, note: String = "", onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val first = remember { FocusRequester() }
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            runCatching { first.requestFocus() }
+        }
+        Column(
+            Modifier
+                .width(340.dp)
+                .heightIn(max = 440.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color(0xF2181A21))
+                .border(1.dp, Line, RoundedCornerShape(22.dp))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            BasicText(title, style = HomeType.hero.copy(fontSize = HomeType.clock.fontSize), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (note.isNotBlank()) BasicText(note, style = HomeType.hint)
+            Spacer(Modifier.height(6.dp))
+            choices.forEachIndexed { i, choice ->
+                ChoiceRow(choice, if (i == 0) first else null) { onPick(choice) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChoiceRow(label: String, requester: FocusRequester?, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    // Only a press that started here counts: the release of the long press that opened the list must not pick.
+    var pressed by remember { mutableStateOf(false) }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
+            .onFocusChanged { focused = it.isFocused; if (!it.isFocused) pressed = false }
+            .onPreviewKeyEvent { e ->
+                if (e.nativeKeyEvent.keyCode in SELECT_KEYS) {
+                    if (e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount == 0) pressed = true
+                    if (e.type == KeyEventType.KeyUp && pressed) {
+                        pressed = false
+                        onClick()
+                    }
+                    true
+                } else false
+            }
+            .focusable()
+            .clip(RoundedCornerShape(17.dp))
+            .background(if (focused) Color.White else Color.White.copy(alpha = 0.08f))
+            .padding(horizontal = 16.dp, vertical = 9.dp)
+    ) {
+        BasicText(label, style = HomeType.tileName.copy(color = if (focused) Color(0xFF111111) else Cream), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** A small mark for how the box is connected; a crossed-out one when it isn't. */
+@Composable
+private fun NetworkMark(state: NetworkState) {
+    val icon = when (state) {
+        NetworkState.WiFi -> R.drawable.ic_wifi
+        NetworkState.Wired -> R.drawable.ic_wired
+        NetworkState.Offline -> R.drawable.ic_offline
+        else -> return
+    }
+    Image(
+        painterResource(icon),
+        contentDescription = null,
+        colorFilter = ColorFilter.tint(if (state == NetworkState.Offline) Accent else Muted),
+        modifier = Modifier.size(18.dp)
+    )
+}
+
+/**
+ * The ambient screen after a few idle minutes: Snug's pictures from the shelf, slowly fading one into the
+ * next, with the time. Just the time over the dark page when Snug has nothing to show.
+ */
+@Composable
+private fun Ambient(shelf: List<ShelfItem>) {
+    val pictures = remember(shelf) { shelf.mapNotNull { it.image }.distinct().shuffled() }
+    var index by remember { mutableStateOf(0) }
+    LaunchedEffect(pictures) {
+        while (pictures.size > 1) {
+            delay(12_000)
+            index = (index + 1) % pictures.size
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Ink)) {
+        val context = LocalContext.current
+        Crossfade(pictures.getOrNull(index), animationSpec = tween(2_000), label = "ambient") { url ->
+            if (url != null) {
+                val request = remember(url) { ImageRequest.Builder(context).data(url).allowRgb565(true).build() }
+                AsyncImage(model = request, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            }
+        }
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.5f to Color.Transparent, 1f to Color(0xCC07080C))))
+        Clock(Modifier.align(Alignment.BottomStart).padding(start = SafeX, bottom = SafeY), HomeType.saverClock)
     }
 }
 
@@ -222,6 +422,7 @@ private fun ShelfBackdrop(owner: TvApp?, item: ShelfItem?, modifier: Modifier) {
                 model = request,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
+                placeholder = rememberBlurHashPainter(item.hash, BlankPainter, width = 32, height = 18),
                 modifier = Modifier.fillMaxSize()
             )
             // One gradient does both jobs: keeps the title readable and fades the picture into the page.
@@ -241,6 +442,7 @@ private fun ShelfBackdrop(owner: TvApp?, item: ShelfItem?, modifier: Modifier) {
 private fun ShelfFront(
     owner: TvApp?,
     shelf: List<ShelfItem>,
+    lastOpened: Long,
     heroIndex: Int,
     snugRequester: FocusRequester,
     onCardFocus: (Int) -> Unit,
@@ -249,7 +451,12 @@ private fun ShelfFront(
     Column(Modifier.fillMaxSize().padding(top = SafeY + 52.dp, bottom = 22.dp), verticalArrangement = Arrangement.Bottom) {
         val hero = shelf.getOrNull(heroIndex)
         if (hero != null) {
-            BasicText(hero.title, style = HomeType.hero, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            BasicText(
+                if (hero.kind == "new") "NEW IN YOUR LIBRARY" else if (hero.progress > 0f) "CONTINUE WATCHING" else "UP NEXT",
+                style = HomeType.kicker,
+                modifier = Modifier.padding(bottom = 6.dp)
+            )
+            ShelfTitle(hero)
             if (hero.subtitle.isNotBlank()) {
                 BasicText(hero.subtitle, style = HomeType.heroSub, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
             }
@@ -265,14 +472,38 @@ private fun ShelfFront(
             }
         } else if (owner != null) {
             BasicText(owner.label, style = HomeType.hero, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (lastOpened > 0L && owner.key != SETTINGS_KEY && owner.key != HIDDEN_KEY) {
+                val ago = DateUtils.getRelativeTimeSpanString(lastOpened, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString()
+                BasicText("Last opened ${ago.replaceFirstChar { it.lowercase() }}", style = HomeType.heroSub, modifier = Modifier.padding(top = 4.dp))
+            }
         }
     }
 }
 
+/** The title's logo when Snug has one for it, else its name in big type. */
+@Composable
+private fun ShelfTitle(item: ShelfItem) {
+    var failed by remember(item.logo) { mutableStateOf(false) }
+    if (item.logo == null || failed) {
+        BasicText(item.title, style = HomeType.hero, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        return
+    }
+    AsyncImage(
+        model = item.logo,
+        contentDescription = item.title,
+        contentScale = ContentScale.Fit,
+        alignment = Alignment.CenterStart,
+        onError = { failed = true },
+        modifier = Modifier.height(64.dp).widthIn(max = 420.dp).fillMaxWidth()
+    )
+}
+
+private val BlankPainter = ColorPainter(TileBlank)
+
 @Composable
 private fun ShelfCard(item: ShelfItem, modifier: Modifier, onFocused: () -> Unit, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "card")
+    val scale by animateFloatAsState(if (focused) FocusScale.Card else 1f, Motion.focus(), label = "card")
     Box(
         modifier
             .width(124.dp)
@@ -287,19 +518,25 @@ private fun ShelfCard(item: ShelfItem, modifier: Modifier, onFocused: () -> Unit
             }
             .focusable()
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .drawBehind { if (focused) drawGlow() }
+            .drawBehind { if (focused) drawFocusGlow() }
             .clip(TileShape)
             .border(if (focused) 2.dp else 0.5.dp, if (focused) Color.White else Line, TileShape)
     ) {
         val context = LocalContext.current
         val request = remember(item.image) { ImageRequest.Builder(context).data(item.image).allowRgb565(true).build() }
-        AsyncImage(model = request, contentDescription = item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        AsyncImage(
+            model = request,
+            contentDescription = item.title,
+            contentScale = ContentScale.Crop,
+            placeholder = rememberBlurHashPainter(item.hash, BlankPainter, width = 32, height = 18),
+            modifier = Modifier.fillMaxSize()
+        )
         if (item.progress > 0f) {
             Box(
                 Modifier.align(Alignment.BottomStart).padding(8.dp).fillMaxWidth().height(3.dp)
-                    .clip(RoundedCornerShape(2.dp)).background(Color(0x66FFFFFF))
+                    .clip(RoundedCornerShape(2.dp)).background(Color(0x66000000))
             ) {
-                Box(Modifier.fillMaxHeight().fillMaxWidth(item.progress).background(Color.White))
+                Box(Modifier.fillMaxHeight().fillMaxWidth(item.progress).background(Accent))
             }
         }
     }
@@ -313,6 +550,7 @@ private fun AppTile(
     modifier: Modifier,
     onFocused: () -> Unit,
     onClick: () -> Unit,
+    onOptions: () -> Unit,
     onStartMove: () -> Unit,
     onMove: (Int) -> Unit,
     onEndMove: () -> Unit
@@ -322,10 +560,11 @@ private fun AppTile(
     var heldLong by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
         when {
-            moving -> 1.16f
-            focused -> 1.12f
+            moving -> FocusScale.Lifted
+            focused -> FocusScale.Tile
             else -> 1f
         },
+        Motion.focus(),
         label = "tile"
     )
     val wiggle = if (moving) {
@@ -348,9 +587,11 @@ private fun AppTile(
                             onMove(ARROW_STEPS.getValue(code)); true
                         }
                         code in SELECT_KEYS -> {
+                            // A fresh press: whatever an earlier long press left behind no longer applies.
+                            if (e.type == KeyEventType.KeyDown && native.repeatCount == 0) heldLong = false
                             if (e.type == KeyEventType.KeyDown && native.repeatCount > 0 && !heldLong && !moving) {
                                 heldLong = true
-                                onStartMove()
+                                onOptions()
                             } else if (e.type == KeyEventType.KeyUp) {
                                 when {
                                     heldLong -> heldLong = false
@@ -374,7 +615,7 @@ private fun AppTile(
                 .focusable()
                 .graphicsLayer { scaleX = scale; scaleY = scale; rotationZ = wiggle }
                 // Flat translucent layers instead of a real shadow, which weak TV GPUs redraw every frame of the zoom.
-                .drawBehind { if (focused || moving) drawGlow() }
+                .drawBehind { if (focused || moving) drawFocusGlow() }
                 .clip(TileShape)
                 .background(TileBlank)
                 .border(if (focused) 2.dp else 0.5.dp, if (focused) Color.White else Line, TileShape),
@@ -401,7 +642,7 @@ private fun AppTile(
             }
         }
         // Apple TV names only the focused app.
-        val labelAlpha by animateFloatAsState(if (focused && !moving) 1f else 0f, tween(180), label = "label")
+        val labelAlpha by animateFloatAsState(if (focused && !moving) 1f else 0f, Motion.fade(), label = "label")
         BasicText(
             app.label,
             style = HomeType.label,
@@ -413,7 +654,7 @@ private fun AppTile(
 }
 
 @Composable
-private fun Clock(modifier: Modifier) {
+private fun Clock(modifier: Modifier, style: androidx.compose.ui.text.TextStyle = HomeType.clock) {
     val context = LocalContext.current
     var now by remember { mutableStateOf(Date()) }
     LaunchedEffect(Unit) {
@@ -423,20 +664,7 @@ private fun Clock(modifier: Modifier) {
         }
     }
     val pattern = if (DateFormat.is24HourFormat(context)) "HH:mm" else "h:mm"
-    BasicText(DateFormat.format(pattern, now).toString(), style = HomeType.clock, modifier = modifier)
-}
-
-private fun DrawScope.drawGlow() {
-    val spread = 10.dp.toPx()
-    for (i in 3 downTo 1) {
-        val grow = spread * i / 3f
-        drawRoundRect(
-            color = Color.Black.copy(alpha = 0.16f),
-            topLeft = Offset(-grow, -grow + spread / 2f),
-            size = Size(size.width + grow * 2, size.height + grow * 2),
-            cornerRadius = CornerRadius(10.dp.toPx() + grow)
-        )
-    }
+    BasicText(DateFormat.format(pattern, now).toString(), style = style, modifier = modifier)
 }
 
 private val SELECT_KEYS = setOf(
