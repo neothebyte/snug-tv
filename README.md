@@ -14,7 +14,11 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 - Home with a featured title and shelves: Continue watching (titles stopped part-way and the next episode of each show, in one row), Unwatched, Favorites, the four biggest genres, Recently added, and TV shows with new episodes.
 - A show can be hidden from Continue watching from its page; it comes back when you next play an episode. The list is kept on the server, so the web version shares it.
 - An optional screensaver fades through the library's backdrops with the time after a few idle minutes on a menu, and optional theme music plays softly on show and movie pages.
-- Full movie grid, genre tiles, and search with an on-screen keyboard.
+- Home opens instantly with the last copy kept on disk, then refreshes. Pictures arrive as WebP with BlurHash placeholders, and the next posters and backdrops are fetched ahead.
+- Full movie and TV show grids with sort, an Unwatched filter and Jump to letter, genre tiles, and search by voice (the remote's microphone or Search key) or with an on-screen keyboard, with recent searches.
+- Title logos, format badges (4K, Dolby Vision, HDR10, Atmos, 5.1) and a Trailer button on title pages.
+- Continue watching also appears on the TV's own home screen (Google TV and Android TV's Play next row).
+- Switch profile keeps each profile signed in on the TV, so switching back needs no password.
 - TV shows: a grid of shows, and a page per show with a Play or Resume button for the next episode, seasons as tabs, and the episode list with progress and watched marks. When an episode ends, the next one starts after a 10-second countdown.
 - Title page with resume and start-over, favourite and watched toggles, format badges, and subtitle and audio pickers.
 - A side rail for sections. Back always returns focus to the poster or button you came from.
@@ -27,6 +31,7 @@ Snug installs beside the official Jellyfin app: its package is `tv.livingroom.wa
 - Dolby Vision files without an HDR10 fallback (profile 5) are converted on TVs without a Dolby Vision decoder, so they don't show purple and green.
 - The TV switches to a refresh rate matching the film (for example 23.976 Hz), so slow pans don't judder, and switches back when the player closes.
 - Up to about two minutes of video is buffered, and a Wi-Fi lock is held while playing, so high-bitrate files ride out Wi-Fi dips.
+- Thumbnails while skipping through a title, when the server has made trickplay pictures (Jellyfin 10.9+).
 - Resume position (a few seconds early, so you catch the line you missed), skips, chapters, playback speed, and progress reported to Jellyfin.
 - Skip intro, Skip recap and Skip preview buttons when the server has marked those parts (for example with the Intro Skipper plugin), and an Up next card as the credits start.
 - After a few episodes in a row with nobody touching the remote, the Up next card asks whether you're still watching, and playback stops at the credits unless you answer.
@@ -106,7 +111,11 @@ app/src/main/java/tv/livingroom/watch/
   AppModel.kt          State and actions
   ServerDiscovery.kt   Finding servers on the network
   SessionStore.kt      Saved server and session
+  HomeCache.kt         The last Home on disk, for an instant start
+  WatchNext.kt         Continue watching on the TV's own home screen
+  ShelfProvider.kt     Snug Home's top shelf
   Models.kt, Theme.kt
+core-ui/               Colours, type, focus and motion, and BlurHash, shared by Snug and Snug Home
 ```
 
 ## Related
@@ -125,6 +134,6 @@ The app was called Living Room until version 1.8.1. The couch logo's sources are
 
 ## Snug Home
 
-`home/` is a second, optional app: a simple home screen for the box in the style of Apple TV. The apps sit in rows of five, and a top shelf above them shows what the focused app is; for Snug it shows what you were watching and what's new, read from Snug (`content://tv.livingroom.watch.shelf`, open only to apps signed with Snug's key). It talks to nothing but your Jellyfin server, keeps no account and sends nothing anywhere. Hold OK on an app to move it. The TV's own Settings is the last tile.
+`home/` is a second, optional app: a simple home screen for the box in the style of Apple TV. The apps sit in rows of five, and a top shelf above them shows what the focused app is; for Snug it shows what you were watching and what's new, read from Snug (`content://tv.livingroom.watch.shelf`, open only to apps signed with Snug's key). It talks to nothing but your Jellyfin server, keeps no account and sends nothing anywhere. Hold OK on an app to move it, hide it or open its App info; hidden apps come back from the Hidden apps tile. The TV's own Settings is the last tile. Tiles and the shelf are kept on disk, so the home screen is complete on its first frame. After five idle minutes an ambient screen fades through Snug's pictures with the time.
 
 Install `SnugHome-*.apk` from the release, then set it as the home screen: Settings → Apps → Default apps → Home app (or the TV will ask the next time the Home button is pressed). To go back, pick the original launcher there again.
