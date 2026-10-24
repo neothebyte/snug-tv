@@ -245,18 +245,14 @@ fun HomeScreen(
             modifier = Modifier.align(Alignment.TopEnd).padding(top = SafeY, end = SafeX)
         )
 
+        // Hints sit top left, across from the clock: at the bottom they covered the second row of apps.
         // Once, until it's been used: how to get to Move and Hide.
         val showHint = !hintSeen && moving == null && apps.size > 1 && !onShelf && focusedRow == 0
         if (showHint) {
             BasicText(
                 "Hold OK on an app to move or hide it",
                 style = HomeType.hint,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = SafeY)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color(0xCC14161D))
-                    .padding(horizontal = 16.dp, vertical = 7.dp)
+                modifier = HintPill.align(Alignment.TopStart)
             )
         }
 
@@ -264,12 +260,7 @@ fun HomeScreen(
             BasicText(
                 "Use the arrows to move it, then press OK",
                 style = HomeType.hint,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = SafeY)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color(0xCC14161D))
-                    .padding(horizontal = 16.dp, vertical = 7.dp)
+                modifier = HintPill.align(Alignment.TopStart)
             )
         }
 
@@ -687,3 +678,9 @@ private val ARROW_STEPS = mapOf(
     AndroidKeyEvent.KEYCODE_DPAD_UP to -COLUMNS,
     AndroidKeyEvent.KEYCODE_DPAD_DOWN to COLUMNS
 )
+
+private val HintPill = Modifier
+    .padding(top = SafeY, start = SafeX)
+    .clip(RoundedCornerShape(14.dp))
+    .background(Color(0xCC14161D))
+    .padding(horizontal = 16.dp, vertical = 7.dp)
