@@ -184,6 +184,8 @@ home/src/main/java/tv/livingroom/home/
   Shelf.kt             Reading Snug's top shelf
   Weather.kt           Current weather for the box's city (Open-Meteo)
   WeatherCorner.kt     The weather and clock in the top right corner
+  Camera.kt            Finding go2rtc and its cameras on the home network
+  CameraTile.kt        The live camera tile and its full-screen view
   Theme.kt
 ```
 
@@ -205,17 +207,27 @@ The app was called Living Room until version 1.8.1. The couch logo's sources are
 
 <p align="center"><img src="docs/snug-home.jpg" alt="Snug Home on the TV, with the weather and time in the corner and the apps in rows of five" width="720"></p>
 
-`home/` is a second, optional app (version 0.3.1): a simple home screen for the box in the style of Apple TV.
+`home/` is a second, optional app (version 0.4.0): a simple home screen for the box in the style of Apple TV.
 
 - The apps sit in rows of five, and a top shelf above them shows what the focused app is. For Snug it shows what you were watching and what's new, read from Snug (`content://tv.livingroom.watch.shelf`, open only to apps signed with Snug's key), including films from Drive mode.
 - Hold OK on an app to move it, hide it or open its App info; hidden apps come back from the Hidden apps tile. The TV's own Settings is always the last tile, and only once, even on boxes that list their Settings app too.
 - The top right corner shows the weather and the time. The city is found from the box's internet connection (ipwho.is, once a day; Bangkok if that fails), the weather comes from [Open-Meteo](https://open-meteo.com) every half hour, and neither needs a key or an account.
+- A home security camera can sit live in the top right of the shelf, under the clock. See [Camera on the home screen](#camera-on-the-home-screen).
 - Tiles, the shelf and the last weather are kept on disk, so the home screen is complete on its first frame.
 - After five idle minutes an ambient screen fades through Snug's pictures with the time.
 
-Apart from the weather, the only things it loads are the shelf's pictures (from your Jellyfin server, or TMDB for Drive mode films). It keeps no account and sends nothing about you anywhere.
+Apart from the weather, the only things it loads are the shelf's pictures (from your Jellyfin server, or TMDB for Drive mode films) and, if you have one, your camera from your own network. It keeps no account and sends nothing about you anywhere.
 
 Install `SnugHome-<version>.apk` from the newest [Snug Home release](https://github.com/neothebyte/snug-tv/releases?q=home-v&expanded=true) (tagged `home-v<version>`). On Android TV, set it as the home screen in Settings → Apps → Default apps → Home app (or the TV asks the next time the Home button is pressed); to go back, pick the original launcher there again. Google TV boxes have no such setting: see [Make it the home screen](#sharing-snug-home-with-others) below.
+
+### Camera on the home screen
+
+Snug Home shows a camera that [go2rtc](https://github.com/AlexxIT/go2rtc) streams on your home network, for example on a Raspberry Pi. go2rtc can also stream cameras with no RTSP of their own, such as Xiaomi's (its Xiaomi source, version 1.9.13 and newer).
+
+- There is nothing to set up on the TV. Snug Home looks for go2rtc on its usual port (1984) on the box's own network, then remembers where it found it. With no go2rtc on the network, there is no tile.
+- It shows the first stream in go2rtc's list, named after it: a stream called `living_room` shows as "Living room". If there is also a stream called `living_room_sd` (the camera's lighter, lower-resolution stream), the tile plays that one, which is easier on a small box.
+- The tile is muted and plays only while the home screen is showing. Select it and press OK to watch it full screen with sound; Back closes it.
+- go2rtc's streams are H.265 or H.264 over RTSP (port 8554). Most TV boxes decode both in hardware.
 
 ### Sharing Snug Home with others
 

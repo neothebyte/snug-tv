@@ -91,6 +91,8 @@ private val GridTop = 318.dp
 private val RowParked = 64.dp
 private val RowPitch = 132.dp
 private val TileShape = RoundedCornerShape(10.dp)
+// The camera tile, top right of the shelf under the clock.
+private val CameraWidth = 208.dp
 
 /**
  * The home screen: a top shelf for the focused app, and the apps in rows of five underneath, like Apple TV.
@@ -101,6 +103,8 @@ fun HomeScreen(
     apps: List<TvApp>,
     shelf: List<ShelfItem>,
     weather: Weather?,
+    camera: Camera?,
+    cameraOnScreen: Boolean,
     resetSignal: Int,
     network: NetworkState,
     ambient: Boolean,
@@ -115,6 +119,7 @@ fun HomeScreen(
     // Long-pressing OK on a tile offers Move, Hide and App info; the Hidden apps tile lists what's hidden.
     var options by remember { mutableStateOf<TvApp?>(null) }
     var showHidden by remember { mutableStateOf(false) }
+    var cameraOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("home", android.content.Context.MODE_PRIVATE) }
     var hintSeen by remember { mutableStateOf(prefs.getBoolean("optionsHintSeen", false)) }
@@ -175,6 +180,7 @@ fun HomeScreen(
             Box(Modifier.fillMaxWidth().height(GridTop).graphicsLayer { alpha = shelfAlpha }) {
                 ShelfFront(
                     owner = owner,
+                    titleEnd = if (camera != null) CameraWidth + 24.dp else 0.dp,
                     shelf = if (snugShelf) shelf else emptyList(),
                     lastOpened = owner?.key?.let { store.lastOpened(it) } ?: 0L,
                     heroIndex = heroIndex,
@@ -182,6 +188,15 @@ fun HomeScreen(
                     onCardFocus = { i -> heroIndex = i; onShelf = true },
                     onOpenItem = onOpenItem
                 )
+                if (camera != null) {
+                    CameraTile(
+                        camera = camera,
+                        // Only while the shelf is showing and nothing covers it.
+                        play = cameraOnScreen && !ambient && !cameraOpen && (focusedRow == 0 || onShelf),
+                        modifier = Modifier.align(Alignment.TopEnd).padding(top = SafeY + 56.dp).width(CameraWidth),
+                        onOpen = { cameraOpen = true }
+                    )
+                }
             }
             order.chunked(COLUMNS).forEachIndexed { row, rowApps ->
                 Row(
@@ -269,6 +284,9 @@ fun HomeScreen(
         }
     }
 
+    if (cameraOpen && camera != null) {
+        CameraFullScreen(camera, onClose = { cameraOpen = false })
+    }
     options?.let { app ->
         ChoiceDialog(
             title = app.label,
@@ -439,6 +457,7 @@ private fun ShelfBackdrop(owner: TvApp?, item: ShelfItem?, modifier: Modifier) {
 @Composable
 private fun ShelfFront(
     owner: TvApp?,
+    titleEnd: androidx.compose.ui.unit.Dp,
     shelf: List<ShelfItem>,
     lastOpened: Long,
     heroIndex: Int,
@@ -454,7 +473,7 @@ private fun ShelfFront(
                 style = HomeType.kicker,
                 modifier = Modifier.padding(bottom = 6.dp)
             )
-            ShelfTitle(hero)
+            Box(Modifier.padding(end = titleEnd)) { ShelfTitle(hero) }
             if (hero.subtitle.isNotBlank()) {
                 BasicText(hero.subtitle, style = HomeType.heroSub, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
             }
@@ -469,7 +488,7 @@ private fun ShelfFront(
                 }
             }
         } else if (owner != null) {
-            BasicText(owner.label, style = HomeType.hero, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            BasicText(owner.label, style = HomeType.hero, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(end = titleEnd))
             if (lastOpened > 0L && owner.key != SETTINGS_KEY && owner.key != HIDDEN_KEY) {
                 val ago = DateUtils.getRelativeTimeSpanString(lastOpened, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString()
                 BasicText("Last opened ${ago.replaceFirstChar { it.lowercase() }}", style = HomeType.heroSub, modifier = Modifier.padding(top = 4.dp))
@@ -665,7 +684,7 @@ private fun Clock(modifier: Modifier, style: androidx.compose.ui.text.TextStyle 
     BasicText(DateFormat.format(pattern, now).toString(), style = style, modifier = modifier)
 }
 
-private val SELECT_KEYS = setOf(
+internal val SELECT_KEYS = setOf(
     AndroidKeyEvent.KEYCODE_DPAD_CENTER,
     AndroidKeyEvent.KEYCODE_ENTER,
     AndroidKeyEvent.KEYCODE_NUMPAD_ENTER,
