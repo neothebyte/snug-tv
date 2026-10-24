@@ -2,7 +2,9 @@
 
 <p align="center"><img src="branding/snug-banner.png" alt="Snug" width="480"></p>
 
-A native Android TV client for [Jellyfin](https://jellyfin.org), built for the remote. Browse your movies and TV shows from the couch, pick up where you left off, and play 4K files straight from the server whenever the television can decode them.
+A native Android TV client for [Jellyfin](https://jellyfin.org), built for the remote. Browse your movies and TV shows from the couch, pick up where you left off, and play 4K files straight from the server whenever the television can decode them. With no server, it can also play films straight off a USB drive plugged into the box ([Drive mode](#drive-mode-no-server)).
+
+Alongside it, [Snug Home](#snug-home) is an optional home screen for the box.
 
 Snug installs beside the official Jellyfin app: its package is `tv.livingroom.watch`, not `org.jellyfin.androidtv`.
 
@@ -68,20 +70,22 @@ Snug can also play films straight off a USB drive plugged into the TV box, with 
 
 ## Install
 
-Download the APK (`LivingRoomTV.apk`, the file name from before the rename) from the [latest release](https://github.com/neothebyte/snug-tv/releases/latest), then sideload it:
+Download `Snug-<version>.apk` (for example `Snug-1.15.0.apk`) from the [latest release](https://github.com/neothebyte/snug-tv/releases/latest), then sideload it:
 
 ```bash
 adb connect <tv-address>:5555
-adb install -r LivingRoomTV.apk
+adb install -r Snug-1.15.0.apk
 ```
 
-To try a build before it is released, open a pull request's run under **Actions → Build** and download the `LivingRoomTV` artifact (a zip with the APK inside). They are signed with the same release key as local builds, so they install over the app already on the television.
+The optional [home screen](#snug-home) has its own releases, tagged `home-v<version>` (see [Snug Home releases](https://github.com/neothebyte/snug-tv/releases?q=home-v&expanded=true)).
 
-On the television, open **Snug**, pick your server (or enter its address, for example `192.168.1.10`), and choose a profile or use Quick Connect.
+To try a build before it is released, open a pull request's run under **Actions → Release** and download the `Snug-<version>` artifact (a zip with the APK inside; `SnugHome-<version>` is beside it). They are signed with the same release key as local builds, so they install over the app already on the television.
 
-Requirements: Android TV or Google TV on Android 7.0 (API 24) or newer, and a Jellyfin 10.10+ server on the local network. The app uses plain HTTP, which is intended for a home LAN.
+On the television, open **Snug**, pick your server (or enter its address, for example `192.168.1.10`), and choose a profile or use Quick Connect. To play from a USB drive instead, pick **USB drive** (see [Drive mode](#drive-mode-no-server)).
 
-Current limits: movies and TV shows are shown (no music or Live TV yet). Large libraries load from the server a page at a time, so there is no size cap.
+Requirements: Android TV or Google TV on Android 7.0 (API 24) or newer, and either a Jellyfin 10.10+ server on the local network or a USB drive with films and a free TMDB key. The app talks to Jellyfin over plain HTTP, which is intended for a home LAN.
+
+Current limits: movies and TV shows are shown (no music or Live TV yet), and Drive mode reads films only, not TV shows. Large libraries load from the server a page at a time, so there is no size cap.
 
 ## Build from source
 
@@ -93,9 +97,9 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"   # or your SDK path
 ./gradlew assembleRelease
 ```
 
-The APK is written to `app/build/outputs/apk/release/app-release.apk`.
+Snug is written to `app/build/outputs/apk/release/app-release.apk` and Snug Home to `home/build/outputs/apk/release/home-release.apk`.
 
-GitHub also builds the APK for every push and pull request: open the run under **Actions → Build** and download the `LivingRoomTV` artifact.
+GitHub also builds both APKs for every push and pull request: open the run under **Actions → Release** and download the `Snug-<version>` and `SnugHome-<version>` artifacts. On `main`, the same workflow publishes each app as its own GitHub Release once its `versionName` changes: Snug as `v<version>` with `Snug-<version>.apk` (from `app/build.gradle.kts`), and Snug Home as `home-v<version>` with `SnugHome-<version>.apk` (from `home/build.gradle.kts`). Snug Home's releases are never marked latest, so the latest release is always Snug.
 
 Release builds are signed with the release key when these properties are set, in `~/.gradle/gradle.properties` locally or as environment variables:
 
@@ -123,11 +127,23 @@ app/src/main/java/tv/livingroom/watch/
   AppModel.kt          State and actions
   ServerDiscovery.kt   Finding servers on the network
   SessionStore.kt      Saved server and session
+  Library.kt           The two sources: Jellyfin or Drive mode
+  DriveLibrary.kt      Drive mode: the library, progress and favourites kept on the box
+  DriveScanner.kt      Finding films in the drive's Movies folder
+  Tmdb.kt              Film details and pictures from TMDB, for Drive mode
   HomeCache.kt         The last Home on disk, for an instant start
   WatchNext.kt         Continue watching on the TV's own home screen
   ShelfProvider.kt     Snug Home's top shelf
   Models.kt, Theme.kt
 core-ui/               Colours, type, focus and motion, and BlurHash, shared by Snug and Snug Home
+home/src/main/java/tv/livingroom/home/
+  HomeActivity.kt      Snug Home's entry point: the home screen, which never closes
+  HomeScreen.kt        Top shelf, rows of app tiles, moving and hiding apps, ambient screen
+  Apps.kt              The installed TV apps, their order and hidden ones
+  Shelf.kt             Reading Snug's top shelf
+  Weather.kt           Current weather for the box's city (Open-Meteo)
+  WeatherCorner.kt     The weather and clock in the top right corner
+  Theme.kt
 ```
 
 ## Related
@@ -146,6 +162,50 @@ The app was called Living Room until version 1.8.1. The couch logo's sources are
 
 ## Snug Home
 
-`home/` is a second, optional app: a simple home screen for the box in the style of Apple TV. The apps sit in rows of five, and a top shelf above them shows what the focused app is; for Snug it shows what you were watching and what's new, read from Snug (`content://tv.livingroom.watch.shelf`, open only to apps signed with Snug's key). It talks to nothing but your Jellyfin server, keeps no account and sends nothing anywhere. Hold OK on an app to move it, hide it or open its App info; hidden apps come back from the Hidden apps tile. The TV's own Settings is the last tile. Tiles and the shelf are kept on disk, so the home screen is complete on its first frame. After five idle minutes an ambient screen fades through Snug's pictures with the time.
+<p align="center"><img src="docs/snug-home.jpg" alt="Snug Home on the TV, with the weather and time in the corner and the apps in rows of five" width="720"></p>
 
-Install `SnugHome-*.apk` from the release, then set it as the home screen: Settings → Apps → Default apps → Home app (or the TV will ask the next time the Home button is pressed). To go back, pick the original launcher there again.
+`home/` is a second, optional app (version 0.3.1): a simple home screen for the box in the style of Apple TV.
+
+- The apps sit in rows of five, and a top shelf above them shows what the focused app is. For Snug it shows what you were watching and what's new, read from Snug (`content://tv.livingroom.watch.shelf`, open only to apps signed with Snug's key), including films from Drive mode.
+- Hold OK on an app to move it, hide it or open its App info; hidden apps come back from the Hidden apps tile. The TV's own Settings is always the last tile, and only once, even on boxes that list their Settings app too.
+- The top right corner shows the weather and the time. The city is found from the box's internet connection (ipwho.is, once a day; Bangkok if that fails), the weather comes from [Open-Meteo](https://open-meteo.com) every half hour, and neither needs a key or an account.
+- Tiles, the shelf and the last weather are kept on disk, so the home screen is complete on its first frame.
+- After five idle minutes an ambient screen fades through Snug's pictures with the time.
+
+Apart from the weather, the only things it loads are the shelf's pictures (from your Jellyfin server, or TMDB for Drive mode films). It keeps no account and sends nothing about you anywhere.
+
+Install `SnugHome-<version>.apk` from the newest [Snug Home release](https://github.com/neothebyte/snug-tv/releases?q=home-v&expanded=true) (tagged `home-v<version>`). On Android TV, set it as the home screen in Settings → Apps → Default apps → Home app (or the TV asks the next time the Home button is pressed); to go back, pick the original launcher there again. Google TV boxes have no such setting: see [Make it the home screen](#sharing-snug-home-with-others) below.
+
+### Sharing Snug Home with others
+
+Snug Home is not on the Play Store, so sharing it means handing out the APK. These are the notes for doing that.
+
+**Install.** Give people the `SnugHome-<version>.apk` from the newest [Snug Home release](https://github.com/neothebyte/snug-tv/releases?q=home-v&expanded=true). It must be the build signed with the release key: that is what lets it read Snug's top shelf, and what lets later versions install over it. Sideload it like Snug:
+
+```bash
+adb connect <tv-address>:5555
+adb install -r SnugHome-0.3.1.apk
+```
+
+**Make it the home screen.** On most Google TV boxes, installing it is not enough: the stock launcher (`com.google.android.apps.tv.launcherx`) keeps taking the Home button, and there is no Default apps → Home app setting to change. Turn the stock launcher off over adb and point Home at Snug Home:
+
+```bash
+adb shell pm disable-user --user 0 com.google.android.apps.tv.launcherx
+adb shell cmd package set-home-activity tv.livingroom.home/.HomeActivity
+adb shell input keyevent KEYCODE_HOME
+```
+
+Press Home on the remote to check that Snug Home opens, then restart the box once to check it still does.
+
+To undo it and get the Google TV home screen back:
+
+```bash
+adb shell pm enable com.google.android.apps.tv.launcherx
+adb shell cmd package set-home-activity com.google.android.apps.tv.launcherx/.home.HomeActivity
+```
+
+Most people won't have adb set up, so a one-click script for these steps (like the one used for the Xiaomi TV Box S) would help before sharing it widely. Remind them to turn Wireless debugging off again afterwards; on the Xiaomi TV Box S the USB port doesn't read drives while it's on.
+
+**Updates.** Without the Play Store, nobody gets updates unless they install the new APK themselves.
+
+- [ ] TODO: an in-app update check. Snug Home could look at the newest `home-v…` GitHub release now and then, and when a newer `SnugHome-<version>.apk` is there, offer to download and install it.
