@@ -67,9 +67,11 @@ class AppStore(private val context: Context) {
     fun load(): List<TvApp> {
         val launchable = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
         val hidden = hidden()
+        // Some boxes list their Settings app as a TV app too; it's already the Settings tile.
+        val settingsApp = runCatching { pm.resolveActivity(Intent(Settings.ACTION_SETTINGS), 0)?.activityInfo?.packageName }.getOrNull()
         val found = pm.queryIntentActivities(launchable, 0)
             .map { it.activityInfo }
-            .filter { it.packageName != context.packageName }
+            .filter { it.packageName != context.packageName && it.packageName != settingsApp }
             .distinctBy { it.packageName }
             .filter { it.packageName !in hidden }
             .map { info ->
