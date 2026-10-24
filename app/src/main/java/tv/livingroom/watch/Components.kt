@@ -74,6 +74,11 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import kotlin.math.roundToInt
+import tv.livingroom.ui.FocusScale
+import tv.livingroom.ui.Motion
+import tv.livingroom.ui.Palette
+import tv.livingroom.ui.drawFocusGlow
+import tv.livingroom.ui.rememberBlurHashPainter
 
 /**
  * The picture behind every screen. Its gradients are painted once into a small picture and
@@ -81,7 +86,7 @@ import kotlin.math.roundToInt
  * times: on weak TV boxes that fill work, not the app's code, is what limits scrolling.
  */
 @Composable
-fun FullBackdrop(url: String?, strong: Boolean = false) {
+fun FullBackdrop(url: String?, strong: Boolean = false, hash: String? = null) {
     // With no photo the baked picture is the whole, solid background; with one it's the dark
     // scrims laid over the photo.
     val glow = url == null
@@ -107,15 +112,16 @@ fun FullBackdrop(url: String?, strong: Boolean = false) {
         if (url != null) {
             val context = LocalContext.current
             val request = remember(url) { ImageRequest.Builder(context).data(url).crossfade(240).build() }
+            // The picture's BlurHash (or ink) as the fade's starting picture, so nothing shows through mid-fade.
+            val blur = rememberBlurHashPainter(hash, InkPainter, width = 32, height = 18)
             AsyncImage(
                 model = request,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 alignment = Alignment.TopCenter,
-                // Ink as the fade's starting picture, so nothing shows through mid-fade.
-                placeholder = InkPainter,
+                placeholder = blur,
                 error = InkPainter,
-                onLoading = { photoShown = false },
+                onLoading = { photoShown = blur !== InkPainter },
                 onSuccess = { photoShown = true },
                 onError = { photoShown = false },
                 modifier = Modifier.fillMaxSize()
@@ -168,14 +174,15 @@ fun TvButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "button")
+    val scale by animateFloatAsState(if (focused) FocusScale.Button else 1f, Motion.focus(), label = "button")
+    // The main action wears the logo's amber, so it reads as the thing to press even before it has focus.
     val background = when {
         focused -> Color.White
-        primary -> Color.White.copy(alpha = 0.22f)
+        primary -> Accent
         selected -> Color.White.copy(alpha = 0.18f)
         else -> Color.White.copy(alpha = 0.09f)
     }
-    val content = if (focused) Color(0xFF111111) else Cream
+    val content = if (focused || primary) OnFocus else Cream
     Row(
         modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
@@ -184,7 +191,7 @@ fun TvButton(
             .heightIn(min = 34.dp)
             .clip(RoundedCornerShape(17.dp))
             .background(background)
-            .border(1.dp, if (focused) Color.White else Line, RoundedCornerShape(17.dp))
+            .border(1.dp, if (focused || primary) Color.Transparent else Line, RoundedCornerShape(17.dp))
             .clickable(interaction, indication = null, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -199,7 +206,7 @@ fun TvButton(
             )
         }
         if (selected && icon == null) {
-            Box(Modifier.size(6.dp).clip(CircleShape).background(if (focused) Color(0xFF111111) else Cream))
+            Box(Modifier.size(6.dp).clip(CircleShape).background(if (focused) OnFocus else Accent))
         }
         if (label.isNotEmpty()) {
             Text(label, style = TvType.button, color = content, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -220,7 +227,7 @@ fun PosterCard(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.1f else 1f, label = "poster")
+    val scale by animateFloatAsState(if (focused) FocusScale.Card else 1f, Motion.focus(), label = "poster")
     val requester = remember { FocusRequester() }
     LaunchedEffect(autoFocus) {
         if (autoFocus) runCatching { requester.requestFocus() }
@@ -239,7 +246,7 @@ fun PosterCard(
                 .graphicsLayer { scaleX = scale; scaleY = scale }
                 // A few flat translucent layers instead of a real 18dp shadow, which weak TV GPUs
                 // redraw on every frame of the zoom. Only redraws, never re-lays out, on focus.
-                .drawBehind { if (focused) drawGlow() }
+                .drawBehind { if (focused) drawFocusGlow() }
                 .clip(RoundedCornerShape(10.dp))
                 .border(if (focused) 2.dp else 0.5.dp, if (focused) Color.White else Line, RoundedCornerShape(10.dp))
         ) {
@@ -247,12 +254,13 @@ fun PosterCard(
                 val context = LocalContext.current
                 // Posters have no transparency, so 16-bit pixels halve their memory and upload cost.
                 val request = remember(imageUrl) { ImageRequest.Builder(context).data(imageUrl).allowRgb565(true).build() }
-                // The blank colour is only painted until the poster arrives, not under it every frame.
+                // The BlurHash (or the blank colour) is only painted until the poster arrives, not under it every frame.
+                val blur = rememberBlurHashPainter(movie.posterHash, PosterBlankPainter)
                 AsyncImage(
                     model = request,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
-                    placeholder = PosterBlankPainter,
+                    placeholder = blur,
                     error = PosterBlankPainter,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -266,17 +274,7 @@ fun PosterCard(
                 )
             }
             if (movie.progress > 0.02f) {
-                Box(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(horizontal = 8.dp, vertical = 7.dp)
-                        .fillMaxWidth()
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color.Black.copy(alpha = 0.5f))
-                ) {
-                    Box(Modifier.fillMaxHeight().fillMaxWidth(movie.progress).background(Color.White))
-                }
+                ProgressBar(movie.progress, Modifier.align(Alignment.BottomCenter).padding(horizontal = 8.dp, vertical = 7.dp))
             }
             Row(Modifier.align(Alignment.TopEnd).padding(5.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                 if (movie.favorite) Badge("♥")
@@ -290,7 +288,7 @@ fun PosterCard(
             Text(
                 movie.cardTitle,
                 style = TvType.small,
-                color = if (focused) Cream else Faint,
+                color = if (focused) Cream else Muted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.graphicsLayer { translationY = if (focused) 4.dp.toPx() else 0f }
@@ -300,22 +298,50 @@ fun PosterCard(
 }
 
 private val InkPainter = ColorPainter(Ink)
-private val PosterBlank = Color(0xFF1B1D24)
-private val PosterBlankPainter = ColorPainter(PosterBlank)
+val PosterBlank = Palette.Blank
+val PosterBlankPainter = ColorPainter(PosterBlank)
 
-private val GlowRings = listOf(3.dp to 0.20f, 7.dp to 0.12f, 12.dp to 0.06f)
+/** How far through a title someone is: a thin amber bar on a dark track. */
+@Composable
+fun ProgressBar(progress: Float, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(3.dp)
+            .clip(RoundedCornerShape(2.dp))
+            .background(Color.Black.copy(alpha = 0.5f))
+    ) {
+        Box(Modifier.fillMaxHeight().fillMaxWidth(progress.coerceIn(0f, 1f)).background(Accent))
+    }
+}
 
-/** A soft dark halo under a focused poster, a little lower than it like a shadow. */
-private fun DrawScope.drawGlow() {
-    val drop = 5.dp.toPx()
-    GlowRings.forEach { (spread, alpha) ->
-        val grow = spread.toPx()
-        drawRoundRect(
-            color = Color.Black.copy(alpha = alpha),
-            topLeft = Offset(-grow, -grow + drop),
-            size = Size(size.width + grow * 2, size.height + grow * 2),
-            cornerRadius = CornerRadius(10.dp.toPx() + grow)
-        )
+/** A small outlined label, like "4K" or "PG-13". */
+@Composable
+fun Badges(labels: List<String>) {
+    if (labels.isEmpty()) return
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        labels.forEach { Chip(it) }
+    }
+}
+
+/**
+ * A shimmerless placeholder in the shape of what's coming: rows of blank posters, so the page
+ * doesn't jump when the real ones arrive. Static on purpose; a moving shimmer costs weak TV GPUs frames.
+ */
+@Composable
+fun SkeletonRows(rows: Int = 2, perRow: Int = 7, posterWidth: Dp = 108.dp) {
+    Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
+        repeat(rows) {
+            Column {
+                Box(Modifier.width(140.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(PosterBlank))
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    repeat(perRow) {
+                        Box(Modifier.width(posterWidth).aspectRatio(2f / 3f).clip(RoundedCornerShape(10.dp)).background(PosterBlank))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -377,9 +403,9 @@ fun RailItem(
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val tint = when {
-        focused -> Color(0xFF111111)
+        focused -> OnFocus
         selected -> Cream
-        else -> Faint
+        else -> Muted
     }
     Row(
         Modifier
@@ -424,9 +450,9 @@ fun SettingRow(
             .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, style = TvType.button, color = if (focused) Color(0xFF111111) else Cream, modifier = Modifier.weight(1f))
+        Text(label, style = TvType.button, color = if (focused) OnFocus else Cream, modifier = Modifier.weight(1f))
         Text(value, style = TvType.body, color = if (focused) Color(0xFF333333) else Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("  ›", style = TvType.button, color = if (focused) Color(0xFF111111) else Faint)
+        Text("  ›", style = TvType.button, color = if (focused) OnFocus else Faint)
     }
 }
 

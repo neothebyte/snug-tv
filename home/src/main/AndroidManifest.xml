@@ -3,6 +3,8 @@
 
     <!-- Only for Snug's artwork, which comes from the Jellyfin server at home. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The small Wi-Fi or Ethernet mark next to the clock. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Snug shares its top shelf only with apps signed with the same key. Declared here too, so the
          order Snug and Snug Home are installed in doesn't matter. -->

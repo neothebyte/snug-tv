@@ -12,8 +12,8 @@ android {
         applicationId = "tv.livingroom.watch"
         minSdk = 24
         targetSdk = 35
-        versionCode = 19
-        versionName = "1.13.0"
+        versionCode = 20
+        versionName = "1.14.0"
     }
 
     // Release key: from ~/.gradle/gradle.properties locally, or environment variables in CI.
@@ -55,6 +55,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -65,6 +66,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core-ui"))
     val composeBom = platform("androidx.compose:compose-bom:2025.05.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -76,11 +78,13 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     // Installs the startup profile (src/main/baseline-prof.txt) on sideloaded installs too.
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    // Continue watching on the TV's own home screen (Watch Next).
+    implementation("androidx.tvprovider:tvprovider:1.0.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil:2.7.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("androidx.media3:media3-exoplayer:1.4.1")
-    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
-    implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("androidx.media3:media3-exoplayer:1.6.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.6.1")
+    implementation("androidx.media3:media3-ui:1.6.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }

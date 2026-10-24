@@ -1,6 +1,8 @@
 package tv.livingroom.watch
 
 import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
 class SessionStore(context: Context) {
@@ -113,10 +115,12 @@ class SessionStore(context: Context) {
         get() = token != null && userId != null
 
     fun saveSession(accessToken: String, id: String, name: String) {
+        val saved = savedSessions().put(id, JSONObject().put("token", accessToken).put("name", name))
         prefs.edit()
             .putString(KEY_TOKEN, accessToken)
             .putString(KEY_USER_ID, id)
             .putString(KEY_USER_NAME, name)
+            .putString(sessionsKey(), saved.toString())
             .apply()
     }
 
@@ -127,6 +131,45 @@ class SessionStore(context: Context) {
             .remove(KEY_USER_NAME)
             .apply()
     }
+
+    /**
+     * Profiles that have signed in on this TV keep their session, per server, so switching between
+     * them needs no password. Signing out forgets one; changing server forgets them all.
+     */
+    private fun savedSessions(): JSONObject =
+        runCatching { JSONObject(prefs.getString(sessionsKey(), null) ?: "{}") }.getOrDefault(JSONObject())
+
+    private fun sessionsKey(): String = "$KEY_SESSIONS:$server"
+
+    fun hasSavedSession(userId: String): Boolean = userId.isNotBlank() && savedSessions().has(userId)
+
+    /** Makes [userId]'s saved session the current one. False when there isn't one. */
+    fun useSavedSession(userId: String): Boolean {
+        val saved = savedSessions().optJSONObject(userId) ?: return false
+        val token = saved.optString("token").takeIf { it.isNotBlank() } ?: return false
+        saveSession(token, userId, saved.optString("name"))
+        return true
+    }
+
+    fun forgetSession(userId: String) {
+        val saved = savedSessions()
+        saved.remove(userId)
+        prefs.edit().putString(sessionsKey(), saved.toString()).apply()
+    }
+
+    fun forgetAllSessions() {
+        prefs.edit().remove(sessionsKey()).apply()
+    }
+
+    /** The last few searches that led somewhere, newest first, for this profile. */
+    var recentSearches: List<String>
+        get() = runCatching {
+            val array = JSONArray(prefs.getString("$KEY_RECENT:$userId", null) ?: "[]")
+            List(array.length()) { array.optString(it) }.filter { it.isNotBlank() }
+        }.getOrDefault(emptyList())
+        set(value) {
+            prefs.edit().putString("$KEY_RECENT:$userId", JSONArray(value.take(6)).toString()).apply()
+        }
 
     companion object {
         private const val LEGACY_SERVER = "http://192.168.1.42:8096"
@@ -145,5 +188,7 @@ class SessionStore(context: Context) {
         private const val KEY_STILL_WATCHING = "stillWatching"
         private const val KEY_THEME_MUSIC = "themeMusic"
         private const val KEY_SCREENSAVER = "screensaver"
+        private const val KEY_SESSIONS = "sessions"
+        private const val KEY_RECENT = "recentSearches"
     }
 }
