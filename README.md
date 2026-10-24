@@ -90,6 +90,13 @@ Movies/
 
 Folders inside it (an A to Z split, for example) are fine, up to four levels deep. In a film's own folder the biggest video is the film; anything named `sample` or `trailer`, and `Extras`, `Featurettes` or `Trailers` folders, are left out. A `poster.jpg` or `folder.jpg` next to the film is used when TMDB has no poster.
 
+Good to know:
+
+- Snug remembers each film by its path inside the movies folder. Choosing a different movies folder (even the one above it), or renaming or moving a film, makes Snug see it as a new film: Continue watching, where it stopped, watched marks and favourites start again for it, and it is looked up on TMDB again. So pick the folder once and keep it.
+- Put the year in the folder or file name (`Title (Year)` or `Title.Year.1080p`). TMDB is searched by name and year, and without the year it can pick the wrong film with the same name.
+- Video files under 40 MB are skipped, so samples and short clips don't show up as films.
+- A subtitle file's language comes from its name (`.en.srt`, `English.srt`). Snug knows English, Vietnamese, Spanish, French, German, Portuguese, Italian, Japanese, Korean, Chinese, Thai, Indonesian and Russian; other subtitles still play, just without a language name.
+
 ## Remote controls
 
 | Button | In the player |
