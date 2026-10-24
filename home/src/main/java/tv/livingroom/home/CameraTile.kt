@@ -64,6 +64,7 @@ import tv.livingroom.ui.drawFocusGlow
 
 private val CameraShape = RoundedCornerShape(10.dp)
 private val LiveRed = Color(0xFFFF5A52)
+private const val STALL_MS = 3_000L
 
 private enum class CameraState { Connecting, Live, Offline }
 
@@ -173,7 +174,8 @@ private fun CameraStatus(state: CameraState, modifier: Modifier) {
 
 /**
  * A player for one camera stream, picture only, alive only while [play] is true, so the box's small memory isn't spent on a
- * picture nobody sees. A stream that drops out is tried again every few seconds.
+ * picture nobody sees. A stream that drops out is tried again every few seconds, and one that stalls is opened
+ * afresh: go2rtc then starts it from the camera's latest picture instead of where it stopped.
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -182,10 +184,13 @@ private fun rememberCameraPlayer(url: String, play: Boolean): Pair<ExoPlayer?, C
     var state by remember(url) { mutableStateOf(CameraState.Connecting) }
     var attempt by remember(url) { mutableIntStateOf(0) }
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
+    var stalled by remember(url) { mutableStateOf(false) }
 
     DisposableEffect(url, play, attempt) {
         if (!play) return@DisposableEffect onDispose { }
-        state = CameraState.Connecting
+        // Reopening a stalled stream keeps showing the last picture rather than flashing "Connecting…".
+        if (state != CameraState.Live) state = CameraState.Connecting
+        stalled = false
         // A live picture: start as soon as there's a moment of it, and stay close behind.
         val loadControl = DefaultLoadControl.Builder().setBufferDurationsMs(500, 2_000, 250, 250).build()
         val exo = ExoPlayer.Builder(context).setLoadControl(loadControl).build()
@@ -197,6 +202,7 @@ private fun rememberCameraPlayer(url: String, play: Boolean): Pair<ExoPlayer?, C
         exo.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) state = CameraState.Live
+                stalled = playbackState == Player.STATE_BUFFERING && state == CameraState.Live
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -218,6 +224,24 @@ private fun rememberCameraPlayer(url: String, play: Boolean): Pair<ExoPlayer?, C
         if (state == CameraState.Offline && play) {
             delay(10_000)
             attempt++
+        }
+    }
+    // Xiaomi's link to go2rtc drops every few seconds; waiting it out leaves the picture frozen or broken.
+    LaunchedEffect(stalled, play) {
+        if (stalled && play) {
+            delay(STALL_MS)
+            attempt++
+        }
+    }
+    // Every stall leaves the picture further behind. Play a little faster while there's more than a moment
+    // buffered, so it catches back up to the camera.
+    LaunchedEffect(player) {
+        val exo = player ?: return@LaunchedEffect
+        while (true) {
+            delay(1_000)
+            val ahead = exo.bufferedPosition - exo.currentPosition
+            val speed = if (ahead > 1_500) 1.25f else if (ahead < 500) 1f else exo.playbackParameters.speed
+            if (speed != exo.playbackParameters.speed) exo.setPlaybackSpeed(speed)
         }
     }
     return player to state
