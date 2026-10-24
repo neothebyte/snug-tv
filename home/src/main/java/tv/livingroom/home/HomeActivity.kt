@@ -42,6 +42,10 @@ class HomeActivity : ComponentActivity() {
     private var shelfJob: Job? = null
     private var weather by mutableStateOf<Weather?>(null)
     private var weatherAt = 0L
+    private var camera by mutableStateOf<Camera?>(null)
+    private var cameraAt = 0L
+    /** The home screen is in front; the camera only plays then. */
+    private var onScreen by mutableStateOf(false)
 
     // Installs, updates and uninstalls change the tiles straight away.
     private val packages = object : BroadcastReceiver() {
@@ -74,6 +78,8 @@ class HomeActivity : ComponentActivity() {
                 apps = apps,
                 shelf = shelf,
                 weather = weather,
+                camera = camera,
+                cameraOnScreen = onScreen,
                 resetSignal = resetSignal,
                 network = network,
                 ambient = ambient,
@@ -122,6 +128,28 @@ class HomeActivity : ComponentActivity() {
                 }
             }
         }
+        camera = CameraSource.cached(applicationContext)
+        // go2rtc on the home network, looked for again now and then in case cameras were added or renamed.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    val wait = CAMERA_EVERY - (System.currentTimeMillis() - cameraAt)
+                    if (wait > 0) delay(wait)
+                    withContext(Dispatchers.IO) { CameraSource.find(applicationContext) }?.let { camera = it }
+                    cameraAt = System.currentTimeMillis()
+                }
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        onScreen = true
+    }
+
+    override fun onStop() {
+        onScreen = false
+        super.onStop()
     }
 
     override fun onResume() {
@@ -185,6 +213,7 @@ class HomeActivity : ComponentActivity() {
         const val AMBIENT_AFTER_MS = 5 * 60_000L
         const val WEATHER_EVERY = 30 * 60 * 1000L
         const val WEATHER_RETRY = 5 * 60 * 1000L
+        const val CAMERA_EVERY = 30 * 60 * 1000L
     }
 }
 
