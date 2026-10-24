@@ -105,7 +105,7 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
 
     /**
      * The movies folder, from the top of the drive, as chosen in Settings. Blank means Snug looks for
-     * one by itself (see [AUTO_FOLDERS]).
+     * one by itself (see [AUTO_NAMES]).
      */
     var folder: String
         get() = prefs.getString(KEY_FOLDER, null).orEmpty()
@@ -157,14 +157,19 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
     }
 
     /**
-     * The movies folder on whichever plugged-in drive has it: the chosen one, else the first of
-     * [AUTO_FOLDERS]. Only those paths are checked on each drive; nothing else on it is listed.
+     * The movies folder on whichever plugged-in drive has it: the chosen one, else a top-level folder
+     * named one of [AUTO_NAMES] (any case), else [OLD_FOLDER]. Only the names of the folders at the top
+     * of each drive are read; nothing inside them is opened.
      */
     private fun findRoot(): File? {
         val chosen = folder
-        val paths = if (chosen.isNotBlank()) listOf(chosen) else AUTO_FOLDERS
         val tops = drives().map { it.second }
-        return paths.firstNotNullOfOrNull { path -> tops.map { File(it, path) }.firstOrNull { it.isDirectory } }
+        if (chosen.isNotBlank()) return tops.map { File(it, chosen) }.firstOrNull { it.isDirectory }
+        for (top in tops) {
+            val dirs = top.listFiles()?.filter { it.isDirectory }.orEmpty()
+            AUTO_NAMES.firstNotNullOfOrNull { name -> dirs.firstOrNull { it.name.trim().equals(name, ignoreCase = true) } }?.let { return it }
+        }
+        return tops.map { File(it, OLD_FOLDER) }.firstOrNull { it.isDirectory }
     }
 
     /** Plugged-in drives, with the name the box gives each, for choosing the movies folder. */
@@ -736,11 +741,10 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
         const val PROBES = "tracks.json"
         const val KEY_TMDB = "tmdbKey"
         const val KEY_FOLDER = "moviesFolder"
-        /**
-         * Where Snug looks for films until a folder is chosen: a Movies or Films folder at the top of
-         * the drive, then the layout Snug 1.15.0 was made for.
-         */
-        val AUTO_FOLDERS = listOf("Movies", "movies", "MOVIES", "Films", "films", "001. Personal/02. Media/02. Videos/01. Movies")
+        /** Where Snug looks for films until a folder is chosen: a folder at the top of the drive with one of these names, in any case. */
+        val AUTO_NAMES = listOf("Movies", "Movie", "Films", "Film")
+        /** Then the layout Snug 1.15.0 was made for. */
+        const val OLD_FOLDER = "001. Personal/02. Media/02. Videos/01. Movies"
         /** Subtitle files beside a film are numbered from here, after the file's own tracks. */
         const val EXTERNAL_BASE = 1000
         const val RESCAN_MS = 60_000L

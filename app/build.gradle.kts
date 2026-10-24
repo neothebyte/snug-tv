@@ -12,8 +12,8 @@ android {
         applicationId = "tv.livingroom.watch"
         minSdk = 24
         targetSdk = 35
-        versionCode = 22
-        versionName = "1.15.1"
+        versionCode = 23
+        versionName = "1.15.2"
 
         // Drive mode looks films up on TMDB. A key from ~/.gradle/gradle.properties is built in when
         // there is one; otherwise it is typed in Settings on the TV.
