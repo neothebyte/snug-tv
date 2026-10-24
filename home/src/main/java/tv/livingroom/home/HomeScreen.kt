@@ -74,6 +74,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -161,9 +162,12 @@ fun HomeScreen(
             modifier = Modifier.graphicsLayer { alpha = shelfAlpha }
         )
 
+        // Three or more rows of apps are taller than the screen. Measured against the screen's height, the
+        // rows past the bottom were squeezed and drawn on top of the row above; let the column be as tall as it is.
         Column(
             Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .wrapContentHeight(align = Alignment.Top, unbounded = true)
                 .offset { IntOffset(0, scroll.roundToPx()) }
                 .padding(horizontal = SafeX)
         ) {
