@@ -25,6 +25,7 @@ val RailCollapsed = 64.dp
 val RailExpanded = 196.dp
 
 val TvType = TypeScale
+val Inter = tv.livingroom.ui.Inter
 
 private val Scheme = darkColorScheme(
     background = Ink,
