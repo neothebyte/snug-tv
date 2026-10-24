@@ -1,6 +1,9 @@
 package tv.livingroom.watch
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
 import android.view.Choreographer
 import android.view.KeyEvent
@@ -8,6 +11,7 @@ import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
 import androidx.activity.compose.setContent
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -35,11 +39,43 @@ class MainActivity : ComponentActivity() {
         // backdrop paints every pixel, so the window colour would be one more full screen to fill.
         window.setBackgroundDrawable(null)
         openRequested(intent)
+        takeTmdbKey(intent)
+        // Drive mode: notice the USB drive being plugged in or pulled out.
+        val mounts = IntentFilter().apply {
+            addAction(Intent.ACTION_MEDIA_MOUNTED)
+            addAction(Intent.ACTION_MEDIA_UNMOUNTED)
+            addAction(Intent.ACTION_MEDIA_EJECT)
+            addAction(Intent.ACTION_MEDIA_REMOVED)
+            addDataScheme("file")
+        }
+        ContextCompat.registerReceiver(this, mountWatcher, mounts, ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
+    private val mountWatcher = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            model.checkDrive()
+        }
+    }
+
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(mountWatcher) }
+        super.onDestroy()
+    }
+
+    /**
+     * A TMDB key for Drive mode handed over with adb, which is easier than typing it with the remote:
+     * adb shell am start -n tv.livingroom.watch/.MainActivity --es tmdbKey KEY
+     */
+    private fun takeTmdbKey(intent: Intent?) {
+        val key = intent?.getStringExtra(EXTRA_TMDB_KEY)?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        intent.removeExtra(EXTRA_TMDB_KEY)
+        model.setTmdbKey(key)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         openRequested(intent)
+        takeTmdbKey(intent)
     }
 
     /** Snug Home asked for one title (its top shelf). Signed out, the sign-in screen stays. */
@@ -89,11 +125,14 @@ class MainActivity : ComponentActivity() {
         // Back from the player: time spent watching isn't time idle on a menu.
         model.lastInput = SystemClock.uptimeMillis()
         model.saverOn = false
+        // Back from Android's settings, or the drive went in while Snug was in the background.
+        model.checkDrive()
     }
 
     private companion object {
         const val OPEN_ITEM = "tv.livingroom.watch.OPEN_ITEM"
         const val EXTRA_ITEM_ID = "itemId"
+        const val EXTRA_TMDB_KEY = "tmdbKey"
         val VOICE_KEYS = setOf(KeyEvent.KEYCODE_SEARCH, KeyEvent.KEYCODE_VOICE_ASSIST)
         val ARROWS = setOf(
             KeyEvent.KEYCODE_DPAD_UP,

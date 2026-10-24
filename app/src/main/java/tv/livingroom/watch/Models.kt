@@ -55,12 +55,17 @@ data class MediaStreamInfo(
     /** Jellyfin's name for the picture's range: SDR, HDR10, HDR10Plus, HLG, DOVI, DOVIWithHDR10 and so on. */
     val videoRangeType: String = "",
     val profile: String = "",
-    val displayTitle: String = ""
+    val displayTitle: String = "",
+    /** The player draws this track itself from the file, even though it is text: embedded subtitles in Drive mode. */
+    val playerDraws: Boolean = false
 ) {
     fun isTextSubtitle(): Boolean {
         if (type != "Subtitle") return false
         return TEXT_SUBS.contains(codec.ifBlank { "subrip" }.lowercase(Locale.US))
     }
+
+    /** Text the app fetches and draws itself, so size and timing changes are instant. */
+    fun appDrawn(): Boolean = isTextSubtitle() && !playerDraws
 
     fun languageName(): String {
         val code = language.trim()
@@ -163,7 +168,7 @@ data class Movie(
     val progress: Float
         get() = if (runtimeTicks > 0L && positionTicks > 0L) (positionTicks.toFloat() / runtimeTicks).coerceIn(0f, 1f) else 0f
 
-    /** The BlurHash for the picture [JellyfinClient.posterUrl] picks. */
+    /** The BlurHash for the picture [Library.posterUrl] picks. */
     val posterHash: String?
         get() = if (isEpisode && seriesId != null && seriesPrimaryTag != null) seriesPrimaryHash else primaryHash
 
@@ -538,6 +543,9 @@ private fun JSONArray?.toChapters(): List<ChapterMark> {
     }
 }
 
+/** Streams in Jellyfin's MediaStreams shape, which Drive mode also uses to keep what it found in a file. */
+fun parseStreams(array: JSONArray?): List<MediaStreamInfo> = array.toStreams()
+
 private fun JSONArray?.toStreams(): List<MediaStreamInfo> {
     if (this == null) return emptyList()
     return buildList {
@@ -602,8 +610,18 @@ fun endsLabel(leftTicks: Long): String {
     return format.format(java.util.Date(whenMs))
 }
 
-fun playbackError(error: Throwable?, libraryEmpty: Boolean): String {
+fun playbackError(error: Throwable?, libraryEmpty: Boolean, local: Boolean = false): String {
     var cause: Throwable? = error
+    if (local) {
+        while (cause != null) {
+            if (cause is DriveException) return cause.message.orEmpty()
+            cause = cause.cause
+        }
+        if (error is java.io.IOException || error?.cause is java.io.IOException) {
+            return "Can't read the movie drive. Check that it's plugged in, then try again."
+        }
+        return "This can't start. The file may be damaged or in a format this TV can't play."
+    }
     var code = 0
     while (cause != null) {
         if (cause is JellyfinException) code = cause.code

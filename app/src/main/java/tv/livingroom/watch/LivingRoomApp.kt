@@ -6,6 +6,7 @@ import coil.ImageLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -14,8 +15,14 @@ class LivingRoomApp : Application() {
         private set
     lateinit var http: OkHttpClient
         private set
-    lateinit var api: JellyfinClient
+    lateinit var jellyfin: JellyfinClient
         private set
+    /** Drive mode: films from a USB drive plugged into the box. */
+    lateinit var drive: DriveLibrary
+        private set
+
+    /** Where the movies come from right now: the Jellyfin server, or the drive. */
+    val api: Library get() = if (store.driveMode) drive else jellyfin
 
     val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -29,7 +36,11 @@ class LivingRoomApp : Application() {
             .readTimeout(60, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 val token = store.token
-                val request = if (token.isNullOrBlank()) {
+                // Only Jellyfin gets the token: TMDB's pictures and anything else go without it.
+                val server = store.server.toHttpUrlOrNull()
+                val url = chain.request().url
+                val ours = server != null && url.host == server.host && url.port == server.port
+                val request = if (token.isNullOrBlank() || !ours) {
                     chain.request()
                 } else {
                     chain.request().newBuilder().header("X-Emby-Token", token).build()
@@ -37,7 +48,8 @@ class LivingRoomApp : Application() {
                 chain.proceed(request)
             }
             .build()
-        api = JellyfinClient(store, http) { codecs }
+        jellyfin = JellyfinClient(store, http) { codecs }
+        drive = DriveLibrary(this, http)
         Coil.setImageLoader(
             ImageLoader.Builder(this)
                 .okHttpClient(http)
