@@ -89,6 +89,9 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.request.ImageRequest
+import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -1054,7 +1057,7 @@ class PlayerActivity : ComponentActivity() {
             Modifier.clip(RoundedCornerShape(20.dp)).background(Color.White).padding(horizontal = 18.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("$skipLabel  ›", style = TvType.button, color = Color(0xFF111111))
+            Text("$skipLabel  ›", style = TvType.button, color = OnFocus)
         }
     }
 
@@ -1084,7 +1087,7 @@ class PlayerActivity : ComponentActivity() {
             ) {
                 val still = api.imageUrl(next.id, "Primary", next.primaryTag, 420)
                     ?: api.backdropUrl(next, 420)
-                Box(Modifier.width(168.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(10.dp)).background(Color(0xFF1B1D24))) {
+                Box(Modifier.width(168.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(10.dp)).background(PosterBlank)) {
                     if (still != null) AsyncImage(model = still, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                 }
                 Column(Modifier.weight(1f).padding(start = 14.dp)) {
@@ -1156,6 +1159,8 @@ class PlayerActivity : ComponentActivity() {
     @Composable
     private fun SeekStrip(targetMs: Long) {
         Box(Modifier.fillMaxSize().padding(horizontal = SafeX, vertical = SafeY), contentAlignment = Alignment.BottomCenter) {
+          Column {
+            SeekThumbnail(targetMs)
             Column(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Glass).padding(horizontal = 18.dp, vertical = 12.dp)
             ) {
@@ -1172,6 +1177,64 @@ class PlayerActivity : ComponentActivity() {
                 Spacer(Modifier.height(8.dp))
                 ProgressTrack(positionMs, targetMs, focused = true)
             }
+          }
+        }
+    }
+
+    /**
+     * The picture at [targetMs], from Jellyfin's trickplay sheets (10.9+, when the server has made them),
+     * above the spot on the progress bar, so a skip lands where it's meant to. Nothing when there are none.
+     */
+    @Composable
+    private fun SeekThumbnail(targetMs: Long) {
+        val item = movie ?: return
+        val info = item.trickplay ?: return
+        val index = (targetMs / info.intervalMs).toInt().coerceIn(0, info.count - 1)
+        val sheet = index / info.perSheet
+        val cell = index % info.perSheet
+        val context = androidx.compose.ui.platform.LocalContext.current
+        var picture by remember(item.id) { mutableStateOf<Pair<Int, androidx.compose.ui.graphics.ImageBitmap>?>(null) }
+        LaunchedEffect(item.id, sheet) {
+            if (picture?.first == sheet) return@LaunchedEffect
+            val loader = context.imageLoader
+            // 16-bit pixels: a sheet is a 10 x 10 grid of thumbnails, big enough that full colour depth costs memory for nothing.
+            val result = withContext(Dispatchers.IO) {
+                loader.execute(
+                    ImageRequest.Builder(context).data(api.trickplaySheetUrl(item.id, info, sheet)).allowHardware(false).allowRgb565(true).build()
+                )
+            }
+            val bitmap = (result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap ?: return@LaunchedEffect
+            picture = sheet to bitmap.asImageBitmap()
+            // The next sheet too, since skips usually keep going the same way.
+            val last = (info.count - 1) / info.perSheet
+            if (sheet < last) loader.enqueue(ImageRequest.Builder(context).data(api.trickplaySheetUrl(item.id, info, sheet + 1)).allowRgb565(true).build())
+        }
+        val (shown, image) = picture ?: return
+        if (shown != sheet) return
+        val col = cell % info.tileWidth
+        val row = cell / info.tileWidth
+        val aspect = if (info.height > 0) info.width.toFloat() / info.height else 16f / 9f
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+            val thumbHeight = 112.dp
+            val thumbWidth = thumbHeight * aspect
+            val at = (targetMs.toFloat() / durationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
+            val x = (maxWidth * at - thumbWidth / 2).coerceIn(0.dp, (maxWidth - thumbWidth).coerceAtLeast(0.dp))
+            androidx.compose.foundation.Canvas(
+                Modifier
+                    .offset(x = x)
+                    .width(thumbWidth)
+                    .height(thumbHeight)
+                    .clip(RoundedCornerShape(10.dp))
+                    .border(2.dp, Color.White, RoundedCornerShape(10.dp))
+            ) {
+                drawImage(
+                    image,
+                    srcOffset = androidx.compose.ui.unit.IntOffset(col * info.width, row * info.height),
+                    srcSize = androidx.compose.ui.unit.IntSize(info.width, info.height.coerceAtLeast(1)),
+                    dstSize = androidx.compose.ui.unit.IntSize(size.width.toInt(), size.height.toInt()),
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.Low
+                )
+            }
         }
     }
 
@@ -1182,7 +1245,7 @@ class PlayerActivity : ComponentActivity() {
         BoxWithConstraints(Modifier.fillMaxWidth().height(14.dp), contentAlignment = Alignment.CenterStart) {
             val trackHeight = if (focused) 6.dp else 4.dp
             Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = 0.25f))) {
-                Box(Modifier.fillMaxHeight().fillMaxWidth(played).background(Color.White))
+                Box(Modifier.fillMaxHeight().fillMaxWidth(played).background(Accent))
             }
             chapters.forEach { chapter ->
                 val at = (chapter.startTicks / 10_000f / total).coerceIn(0f, 1f)
@@ -1293,6 +1356,7 @@ class PlayerActivity : ComponentActivity() {
                 }
                 .focusable(interactionSource = interaction)
         ) {
+            seekPreviewMs?.let { if (focused) SeekThumbnail(it) }
             if (focused) {
                 val preview = seekPreviewMs
                 Text(
@@ -1462,10 +1526,10 @@ class PlayerActivity : ComponentActivity() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(Modifier.width(18.dp)) {
-                if (row.selected) Text("✓", style = TvType.button, color = if (focused) Color(0xFF111111) else Cream)
+                if (row.selected) Text("✓", style = TvType.button, color = if (focused) OnFocus else Cream)
             }
             Column(Modifier.weight(1f)) {
-                Text(row.label, style = TvType.button, color = if (focused) Color(0xFF111111) else Cream, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(row.label, style = TvType.button, color = if (focused) OnFocus else Cream, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (row.detail.isNotBlank()) {
                     Text(row.detail, style = TvType.small, color = if (focused) Color(0xFF444444) else Muted, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 }

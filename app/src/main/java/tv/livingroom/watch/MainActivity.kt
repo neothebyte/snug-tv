@@ -67,6 +67,14 @@ class MainActivity : ComponentActivity() {
             if (event.action == KeyEvent.ACTION_UP) model.saverOn = false
             return true
         }
+        // The remote's search or microphone key: Search, listening straight away.
+        if (event.keyCode in VOICE_KEYS && model.store.signedIn) {
+            if (event.action == KeyEvent.ACTION_UP) {
+                model.voiceRequest++
+                model.go(Screen.Search)
+            }
+            return true
+        }
         if (event.action == KeyEvent.ACTION_DOWN && event.keyCode in ARROWS && event.repeatCount > 0) {
             if (moveOnScreen) return true
             moveOnScreen = true
@@ -86,6 +94,7 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val OPEN_ITEM = "tv.livingroom.watch.OPEN_ITEM"
         const val EXTRA_ITEM_ID = "itemId"
+        val VOICE_KEYS = setOf(KeyEvent.KEYCODE_SEARCH, KeyEvent.KEYCODE_VOICE_ASSIST)
         val ARROWS = setOf(
             KeyEvent.KEYCODE_DPAD_UP,
             KeyEvent.KEYCODE_DPAD_DOWN,

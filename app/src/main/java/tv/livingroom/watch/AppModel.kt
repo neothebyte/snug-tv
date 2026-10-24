@@ -22,7 +22,11 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 /** A movie grid that the server fills a page at a time as it scrolls. */
-class MovieList(var fetch: (start: Int, limit: Int) -> MoviePage) {
+class MovieList(
+    var fetch: (start: Int, limit: Int) -> MoviePage,
+    /** How many titles sort before a letter, for jumping to it; null where the grid can't jump. */
+    var countBefore: ((letter: String) -> Int?)? = null
+) {
     var items by mutableStateOf<List<Movie>>(emptyList())
     var total by mutableStateOf(0)
     var loaded by mutableStateOf(false)
@@ -33,6 +37,9 @@ class MovieList(var fetch: (start: Int, limit: Int) -> MoviePage) {
 }
 
 enum class LoginStep { Server, Profiles }
+
+/** Where a jump to a letter landed: the first title from that letter on, by its place in the grid. */
+data class JumpTarget(val screenKey: String, val index: Int)
 
 /** Where a Quick Connect sign-in has got to. */
 sealed interface QuickState {
@@ -107,6 +114,23 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var stillWatchingAfter by mutableStateOf(store.stillWatchingAfter)
     var themeMusic by mutableStateOf(store.themeMusic)
     var screensaverMinutes by mutableStateOf(store.screensaverMinutes)
+    /** Pictures to fetch ahead of time; the app shell hands them to the image loader. */
+    var prefetchUrls by mutableStateOf<List<String>>(emptyList())
+        private set
+    private val prefetched = object : LinkedHashMap<String, Unit>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?): Boolean = size > 400
+    }
+    var jumpTarget by mutableStateOf<JumpTarget?>(null)
+    /** Bumped when the remote's search or microphone key asks Search to start listening. */
+    var voiceRequest by mutableStateOf(0)
+    var recentSearches by mutableStateOf(store.recentSearches)
+        private set
+    /** Trailer files found next to a title, by its id. */
+    var trailers by mutableStateOf<Map<String, List<Movie>>>(emptyMap())
+        private set
+    private val homeCache = HomeCache(app)
+    /** Home is still the copy from disk, shown while the fresh one loads. */
+    private var fromCache = false
     /** Shows hidden from Continue watching, shared with the web version through the server. */
     var hiddenShows by mutableStateOf<Set<String>>(emptySet())
         private set
@@ -138,6 +162,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         when {
             store.signedIn -> {
                 screen = Screen.Home
+                // Last time's Home at once; the fresh one replaces it when the server answers.
+                store.userId?.let { id -> homeCache.load(id) }?.let { cached ->
+                    home = cached
+                    fromCache = true
+                    cached.shelves.forEach { keep(it.movies) }
+                }
                 refresh()
             }
             loginStep == LoginStep.Server -> findServers()
@@ -175,26 +205,77 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** The grid behind [screen], created empty on first use. */
     fun listFor(screen: Screen): MovieList? {
         lists[screen.key]?.let { return it }
-        val fetch: (Int, Int) -> MoviePage = when (screen) {
-            Screen.Movies -> moviesFetch()
-            Screen.Shows -> { start, limit -> api.movies(start, limit, types = "Series") }
-            is Screen.Genre -> { start, limit -> api.movies(start, limit, genre = screen.name) }
-            is Screen.Person -> { start, limit -> api.movies(start, limit, person = screen.name, personType = screen.role) }
+        val list = when (screen) {
+            Screen.Movies -> MovieList(sortedFetch("Movie"), lettersFor("Movie"))
+            Screen.Shows -> MovieList(sortedFetch("Series"), lettersFor("Series"))
+            is Screen.Genre -> MovieList({ start, limit -> api.movies(start, limit, genre = screen.name) })
+            is Screen.Person -> MovieList({ start, limit -> api.movies(start, limit, person = screen.name, personType = screen.role) })
             else -> return null
         }
-        return MovieList(fetch).also { lists[screen.key] = it }
+        return list.also { lists[screen.key] = it }
     }
 
-    private fun moviesFetch(): (Int, Int) -> MoviePage {
+    /** Movies or shows ([types]) in the chosen order and filter. Both grids share the Sort and Unwatched buttons. */
+    private fun sortedFetch(types: String): (Int, Int) -> MoviePage {
         val sortBy = when (sort) {
             "year" -> "ProductionYear,SortName"
-            "added" -> "DateCreated,SortName"
+            // A show is "added" when it last got a new episode, not when its first one arrived.
+            "added" -> if (types == "Series") "DateLastContentAdded,SortName" else "DateCreated,SortName"
             else -> "SortName"
         }
         // Only the first key is reversed, so titles within a year still run A to Z.
         val order = if (sort == "title") "Ascending" else "Descending"
         val filters = if (unwatchedOnly) "IsUnplayed" else null
-        return { start, limit -> api.movies(start, limit, sortBy = sortBy, sortOrder = order, filters = filters) }
+        return { start, limit -> api.movies(start, limit, sortBy = sortBy, sortOrder = order, filters = filters, types = types) }
+    }
+
+    private fun lettersFor(types: String): (String) -> Int? = { letter ->
+        if (letter == "#") 0 else api.countBefore(letter, types, if (unwatchedOnly) "IsUnplayed" else null)
+    }
+
+    /** Jumps the A to Z grid [list] to [letter]: loads pages up to it, then hands the place to the grid. */
+    fun jumpToLetter(list: MovieList, screenKey: String, letter: String) {
+        val count = list.countBefore ?: return
+        viewModelScope.launch {
+            try {
+                val index = withContext(Dispatchers.IO) { count(letter) }
+                if (index == null) {
+                    message = "Nothing here starts with $letter."
+                    return@launch
+                }
+                val generation = list.generation
+                while (list.items.size <= index && !list.complete && generation == list.generation) {
+                    val page = withContext(Dispatchers.IO) { list.fetch(list.items.size, PAGE) }
+                    if (generation != list.generation) return@launch
+                    keep(page.items)
+                    val have = list.items.mapTo(HashSet()) { it.id }
+                    list.items = list.items + page.items.filter { it.id !in have }
+                    list.total = if (page.items.size < PAGE) list.items.size else maxOf(page.total, list.items.size)
+                    list.loaded = true
+                    if (page.items.isEmpty()) break
+                }
+                if (list.items.isNotEmpty()) jumpTarget = JumpTarget(screenKey, index.coerceAtMost(list.items.lastIndex))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                message = "Couldn't jump there."
+            }
+        }
+    }
+
+    /**
+     * Fetches pictures the viewer is likely to want next: the posters after [index] in [movies], and
+     * the backdrop and logo of the one at [index], which Home shows big as soon as it's focused.
+     */
+    fun prefetchAround(movies: List<Movie>, index: Int, ahead: Int, backdrop: Boolean = true) {
+        val urls = buildList {
+            movies.getOrNull(index)?.takeIf { backdrop }?.let { movie ->
+                add(api.backdropUrl(movie, 1280))
+                add(api.logoUrl(movie))
+            }
+            for (i in index + 1..minOf(index + ahead, movies.lastIndex)) add(api.posterUrl(movies[i]))
+        }.filterNotNull().filter { url -> prefetched.put(url, Unit) == null }
+        if (urls.isNotEmpty()) prefetchUrls = urls
     }
 
     fun cycleSort() {
@@ -212,9 +293,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun resetMovies() {
-        val list = lists[Screen.Movies.key] ?: return
-        list.fetch = moviesFetch()
-        reload(list, keepSize = false)
+        jumpTarget = null
+        lists[Screen.Movies.key]?.let { list ->
+            list.fetch = sortedFetch("Movie")
+            list.countBefore = lettersFor("Movie")
+            reload(list, keepSize = false)
+        }
+        lists[Screen.Shows.key]?.let { list ->
+            list.fetch = sortedFetch("Series")
+            list.countBefore = lettersFor("Series")
+            reload(list, keepSize = false)
+        }
     }
 
     fun loadMore(list: MovieList) {
@@ -255,12 +344,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             delay(350)
             when (target) {
                 is Screen.Detail -> prefetchDetail(target.id)
+                is Screen.Series -> movieFor(target.id)?.let { show -> prefetchAround(listOf(show), 0, ahead = 0) }
                 else -> listFor(target)?.let { if (!it.loaded) loadMore(it) }
             }
         }
     }
 
     private suspend fun prefetchDetail(id: String) {
+        movieFor(id)?.let { prefetchAround(listOf(it), 0, ahead = 0) }
         if (id !in details) {
             runCatching { withContext(Dispatchers.IO) { api.item(id) } }.onSuccess { details = details + (id to it) }
         }
@@ -353,6 +444,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             compareByDescending<Movie> { it.name.lowercase().startsWith(lower) }.thenBy { it.sortLabel.lowercase() }
         )
         (ranked + byPeople.await() + byGenre.await()).distinctBy { it.id }
+    }
+
+    /** Keeps the current search among the recent ones, once it has led somewhere. */
+    fun rememberSearch() {
+        val needle = query.trim()
+        if (needle.length < 2) return
+        recentSearches = (listOf(needle) + recentSearches.filterNot { it.equals(needle, ignoreCase = true) }).take(6)
+        store.recentSearches = recentSearches
     }
 
     private fun allGenres(): List<String> = genreNames ?: api.genres().also { genreNames = it }
@@ -567,14 +666,28 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 val known = home?.shelves.orEmpty().filter { it.genre != null }.ifEmpty {
                     genreShelves(savedTopGenres(), fields)
                 }
-                home = rows.feed(known)
+                // A cached Home's genre rows are only a stand-in: keep their names but use fresh posters.
+                val stale = home?.shelves.orEmpty().filter { it.genre != null }.map { it.genre!! }
+                val genreRows = if (fromCache && stale.isNotEmpty()) genreShelves(stale, fields).ifEmpty { known } else known
+                home = rows.feed(genreRows)
+                fromCache = false
                 message = ""
                 busy = false
+                saveHome()
+                val continueRow = rows.continueRow()
+                livingRoom.background.launch {
+                    // The TV's own home screen and Snug Home's shelf show the same thing as Snug's Home.
+                    WatchNext.sync(getApplication(), api, continueRow)
+                    ShelfCache.write(getApplication(), shelfRows(api, continueRow, rows.recent.items))
+                }
                 warmMovies()
                 val top = genreStatsOrLoad()?.take(4)?.map { it.name } ?: return@launch
                 saveTopGenres(top)
                 val fresh = genreShelves(top, fields)
-                if (fresh != known) home = rows.feed(fresh)
+                if (fresh != genreRows) {
+                    home = rows.feed(fresh)
+                    saveHome()
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -582,11 +695,23 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     signOut()
                     return@launch
                 }
-                if (home == null) message = "Can't reach Jellyfin at ${store.server}. Check the server in Settings."
+                message = if (home == null) {
+                    "Can't reach Jellyfin at ${store.server}. Check the server in Settings."
+                } else if (fromCache) {
+                    "Showing your last Home: Jellyfin isn't answering right now."
+                } else {
+                    message
+                }
             } finally {
                 busy = false
             }
         }
+    }
+
+    private fun saveHome() {
+        val feed = home ?: return
+        val userId = store.userId ?: return
+        livingRoom.background.launch { homeCache.save(userId, feed) }
     }
 
     private suspend fun genreShelves(names: List<String>, fields: String): List<Shelf> {
@@ -625,6 +750,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val hidden: Set<String>
     ) {
         fun all() = listOf(resume, nextUp, unwatched, favorites, recent.items, shows)
+
+        fun continueRow(): List<Movie> = continuing()
 
         /**
          * Titles stopped part-way and the next episode of each show, in one row, most recently watched
@@ -702,6 +829,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private fun enterHome() {
         backStack.clear()
+        recentSearches = store.recentSearches
         screen = Screen.Home
         refresh()
     }
@@ -757,6 +885,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** Signs out and goes back to picking a server. */
     fun changeServer() {
+        forgetProfile()
+        store.forgetAllSessions()
         clearSignedIn()
         message = ""
         loginStep = LoginStep.Server
@@ -811,7 +941,45 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun signOut() {
+        forgetProfile()
         clearSignedIn()
+        backToProfiles()
+    }
+
+    /** Back to "Who's watching?", keeping this profile signed in on the TV for next time. */
+    fun switchProfile() {
+        // Sessions from before profiles were kept get saved now, so this one comes back without a password.
+        val token = store.token
+        val userId = store.userId
+        if (token != null && userId != null) store.saveSession(token, userId, store.userName)
+        clearSignedIn()
+        backToProfiles()
+    }
+
+    /** Signs straight in to [profile] when it already has a session on this TV. False when it doesn't. */
+    fun resumeProfile(profile: Profile): Boolean {
+        if (!store.useSavedSession(profile.id)) return false
+        homeCache.load(profile.id)?.let { cached ->
+            home = cached
+            fromCache = true
+            cached.shelves.forEach { keep(it.movies) }
+        }
+        enterHome()
+        return true
+    }
+
+    /** Forgets everything this TV keeps for the signed-in profile: its session, its Home and its cards on the TV's home screen. */
+    private fun forgetProfile() {
+        store.userId?.let { id ->
+            store.forgetSession(id)
+            homeCache.clear(id)
+        }
+        livingRoom.background.launch {
+            WatchNext.clear(getApplication())
+        }
+    }
+
+    private fun backToProfiles() {
         if (store.server.isBlank()) {
             loginStep = LoginStep.Server
             findServers()
@@ -823,6 +991,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private fun clearSignedIn() {
         closeQuickConnect()
+        // Snug Home's shelf belongs to whoever is signed in.
+        ShelfCache.clear(getApplication())
         store.clearSession()
         homeJob?.cancel()
         searchJob?.cancel()
@@ -842,6 +1012,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         hiddenShows = emptySet()
         saverOn = false
         query = ""
+        fromCache = false
+        trailers = emptyMap()
+        jumpTarget = null
         backStack.clear()
         focusMemory.clear()
         listStates.clear()
@@ -975,6 +1148,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             try {
                 val full = withContext(Dispatchers.IO) { api.item(id) }
                 details = details + (id to full)
+                if (full.localTrailerCount > 0 && id !in trailers) {
+                    runCatching { withContext(Dispatchers.IO) { api.localTrailers(id) } }.onSuccess { found ->
+                        trailers = trailers + (id to found)
+                    }
+                }
             } catch (_: Exception) {
                 if (movieFor(id) == null) message = "That title didn't open."
             }

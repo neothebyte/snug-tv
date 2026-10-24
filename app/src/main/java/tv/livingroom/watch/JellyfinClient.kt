@@ -89,13 +89,15 @@ class JellyfinClient(
         search: String? = null,
         fields: String = GRID_FIELDS,
         countTotal: Boolean = true,
-        types: String = "Movie"
+        types: String = "Movie",
+        nameStartsWith: String? = null,
+        nameLessThan: String? = null
     ): MoviePage {
         val userId = store.userId ?: error("Sign in again.")
         val query = buildString {
             append("/Users/$userId/Items?IncludeItemTypes=$types&Recursive=true")
             append("&SortBy=$sortBy&SortOrder=$sortOrder&StartIndex=$start&Limit=$limit")
-            append("&Fields=$fields&EnableImageTypes=Primary,Backdrop&ImageTypeLimit=1")
+            append("&Fields=$fields$IMAGES")
             append("&EnableTotalRecordCount=$countTotal")
             if (filters != null) append("&Filters=$filters")
             if (genre != null) append("&Genres=${encode(genre)}")
@@ -103,10 +105,24 @@ class JellyfinClient(
             if (!personType.isNullOrBlank()) append("&PersonTypes=${encode(personType)}")
             if (personIds.isNotEmpty()) append("&PersonIds=${personIds.joinToString(",") { encode(it) }}")
             if (!search.isNullOrBlank()) append("&SearchTerm=${encode(search)}")
+            if (nameStartsWith != null) append("&NameStartsWith=${encode(nameStartsWith)}")
+            if (nameLessThan != null) append("&NameLessThan=${encode(nameLessThan)}")
         }
         val json = JSONObject(call("GET", query))
         val items = parseItems(json)
         return MoviePage(items, if (countTotal) json.optInt("TotalRecordCount", items.size) else items.size)
+    }
+
+    /**
+     * How many titles come before the first one starting with [letter] in A to Z order, or null when
+     * none starts with it. Asks for that title's own sort name first, so the count matches the
+     * server's ordering whatever case it keeps sort names in.
+     */
+    fun countBefore(letter: String, types: String, filters: String?): Int? {
+        val first = movies(limit = 1, filters = filters, types = types, nameStartsWith = letter, fields = "SortName", countTotal = false)
+            .items.firstOrNull() ?: return null
+        val sortName = first.sortName.ifBlank { first.name }
+        return movies(limit = 1, filters = filters, types = types, nameLessThan = sortName, fields = "SortName").total
     }
 
     fun genres(): List<String> {
@@ -223,10 +239,39 @@ class JellyfinClient(
     fun imageUrl(itemId: String, kind: String, tag: String?, width: Int): String? {
         if (tag.isNullOrBlank()) return null
         val encoded = URLEncoder.encode(tag, "UTF-8")
-        return "${base()}/Items/$itemId/Images/$kind?maxWidth=$width&quality=85&tag=$encoded"
+        // WebP is about a third smaller than JPEG at the same quality, so pictures arrive sooner on Wi-Fi.
+        return "${base()}/Items/$itemId/Images/$kind?maxWidth=$width&quality=85&format=Webp&tag=$encoded"
     }
 
-    fun userImageUrl(userId: String): String = "${base()}/Users/$userId/Images/Primary?maxWidth=240&quality=85"
+    /** The title's logo, for the big title on Home and the detail pages, or null when it has none. */
+    fun logoUrl(item: Movie, width: Int = 640): String? = imageUrl(item.logoOwner ?: item.id, "Logo", item.logoTag, width)
+
+    /** One sheet of trickplay thumbnails for [itemId]; [sheet] counts from 0. */
+    fun trickplaySheetUrl(itemId: String, info: TrickplayInfo, sheet: Int): String {
+        val key = URLEncoder.encode(store.token.orEmpty(), "UTF-8")
+        return "${base()}/Videos/${encode(itemId)}/Trickplay/${info.width}/$sheet.jpg?MediaSourceId=${encode(info.sourceId)}&api_key=$key"
+    }
+
+    /** Trailer files kept next to [itemId] in the library. */
+    fun localTrailers(itemId: String): List<Movie> {
+        val userId = store.userId ?: error("Sign in again.")
+        val text = try {
+            call("GET", "/Items/${encode(itemId)}/LocalTrailers?userId=$userId")
+        } catch (error: JellyfinException) {
+            // Servers before 10.9 only know the older path.
+            if (error.code != 404) throw error
+            call("GET", "/Users/$userId/Items/${encode(itemId)}/LocalTrailers")
+        }
+        val array = JSONArray(text.ifBlank { "[]" })
+        return buildList {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                if (item.optString("Id").isNotBlank()) add(parseMovie(item))
+            }
+        }
+    }
+
+    fun userImageUrl(userId: String): String = "${base()}/Users/$userId/Images/Primary?maxWidth=240&quality=85&format=Webp"
 
     fun playback(
         itemId: String,
@@ -543,7 +588,7 @@ class JellyfinClient(
 
     private fun authorizationHeader(): String {
         val token = store.token?.let { ", Token=\"$it\"" }.orEmpty()
-        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"1.11.0\"$token"
+        return "MediaBrowser Client=\"LivingRoom\", Device=\"Snug TV\", DeviceId=\"${store.deviceId}\", Version=\"${BuildConfig.VERSION_NAME}\"$token"
     }
 
     /** Gives up quickly, so trying a wrong address doesn't leave the TV hanging. */
@@ -559,7 +604,7 @@ class JellyfinClient(
         /** Enough for a poster and the top of the detail page. Cast and the rest load when a movie opens. */
         const val GRID_FIELDS = "Overview,Genres,BackdropImageTags"
         const val HOME_FIELDS = "Overview,BackdropImageTags"
-        private const val IMAGES = "&EnableImageTypes=Primary,Backdrop&ImageTypeLimit=1"
+        private const val IMAGES = "&EnableImageTypes=Primary,Backdrop,Logo&ImageTypeLimit=1"
         const val OPEN_SUBTITLES = "4b9ed42f518548b598036ff2989014c4"
         private const val MAX_BITRATE = 150_000_000
         private const val PLAYABLE_WITHOUT_DOLBY_VISION =

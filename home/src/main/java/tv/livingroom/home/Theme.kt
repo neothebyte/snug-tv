@@ -1,34 +1,28 @@
 package tv.livingroom.home
 
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import tv.livingroom.ui.Palette
+import tv.livingroom.ui.TypeScale
 
-// Same palette and type as Snug, so the two feel like one product.
-val Ink = Color(0xFF07080C)
-val Cream = Color(0xFFF7F4EF)
-val Muted = Color(0xB3F7F4EF)
-val Line = Color(0x33FFFFFF)
-val TileBlank = Color(0xFF1B1D24)
+// Same palette and type as Snug (both come from :core-ui), so the two feel like one product.
+val Ink = Palette.Ink
+val Cream = Palette.Cream
+val Muted = Palette.Muted
+val Line = Palette.Line
+val TileBlank = Palette.Blank
+val Accent = Palette.Accent
 
-// Android TV lays out at 960x540dp; keep content inside the 5% overscan margin.
-val SafeX = 48.dp
-val SafeY = 27.dp
-
-val Inter = FontFamily(
-    Font(R.font.inter_regular, FontWeight.Normal),
-    Font(R.font.inter_semibold, FontWeight.SemiBold)
-)
+val SafeX = tv.livingroom.ui.SafeX
+val SafeY = tv.livingroom.ui.SafeY
 
 object HomeType {
-    val hero = TextStyle(fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 34.sp, lineHeight = 38.sp, letterSpacing = (-0.6).sp, color = Cream)
-    val heroSub = TextStyle(fontFamily = Inter, fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 19.sp, color = Muted)
-    val clock = TextStyle(fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 22.sp, color = Cream)
-    val label = TextStyle(fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, lineHeight = 16.sp, color = Cream)
-    val hint = TextStyle(fontFamily = Inter, fontWeight = FontWeight.Normal, fontSize = 12.sp, lineHeight = 16.sp, color = Muted)
-    val tileName = TextStyle(fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, lineHeight = 16.sp, color = Cream)
+    val hero: TextStyle = TypeScale.display
+    val heroSub: TextStyle = TypeScale.body.copy(fontSize = 15.sp, lineHeight = 20.sp)
+    val kicker: TextStyle = TypeScale.kicker
+    val clock: TextStyle = TypeScale.title.copy(fontSize = 18.sp, lineHeight = 22.sp)
+    val label: TextStyle = TypeScale.button.copy(fontSize = 13.sp, lineHeight = 17.sp, color = Cream)
+    val hint: TextStyle = TypeScale.small.copy(fontSize = 13.sp, lineHeight = 17.sp)
+    val tileName: TextStyle = TypeScale.button.copy(color = Cream)
+    val saverClock: TextStyle = TypeScale.display.copy(fontSize = 64.sp, lineHeight = 70.sp)
 }

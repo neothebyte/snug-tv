@@ -38,6 +38,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -78,6 +79,14 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import android.speech.RecognizerIntent
+import coil.request.ImageRequest
+import coil.imageLoader
+import tv.livingroom.ui.FocusScale
+import tv.livingroom.ui.Motion
+import tv.livingroom.ui.drawFocusGlow
+import tv.livingroom.ui.rememberBlurHashPainter
+import androidx.compose.ui.draw.drawBehind
 
 private val ContentStart = 20.dp + RailCollapsed + 24.dp
 
@@ -110,10 +119,14 @@ fun WatchApp(vm: AppModel) {
     }
     // 1280 wide is plenty under the dark gradients, and less than half the pixels of 1920 to decode and upload.
     val shot = backdropMovie?.let { api.backdropUrl(it, 1280) }
+    // Pictures the viewer is likely to open next, fetched while they're still deciding.
+    LaunchedEffect(vm.prefetchUrls) {
+        vm.prefetchUrls.forEach { url -> context.imageLoader.enqueue(ImageRequest.Builder(context).data(url).build()) }
+    }
     // No colour of its own: FullBackdrop already paints every pixel, and each extra full-screen
     // layer costs the TV box's graphics chip a whole screen of work every frame.
     Box(Modifier.fillMaxSize()) {
-        FullBackdrop(shot, strong = screen is Screen.Detail || screen is Screen.Series)
+        FullBackdrop(shot, strong = screen is Screen.Detail || screen is Screen.Series, hash = backdropMovie?.backdropHash)
         if (screen is Screen.Login) {
             LoginScreen(vm)
             return@Box
@@ -132,7 +145,7 @@ fun WatchApp(vm: AppModel) {
                 Screen.Home -> HomeScreen(vm, play)
                 Screen.Search -> SearchScreen(vm)
                 Screen.Movies -> GridScreen(vm, "Movies", tools = true)
-                Screen.Shows -> GridScreen(vm, "TV shows", noun = "show")
+                Screen.Shows -> GridScreen(vm, "TV shows", tools = true, noun = "show")
                 is Screen.Series -> SeriesScreen(vm, screen, play)
                 is Screen.Genre -> GridScreen(vm, screen.name)
                 is Screen.Person -> GridScreen(vm, screen.name, kicker = screen.role.ifBlank { "Credits" })
@@ -348,9 +361,14 @@ private fun ProfileStep(vm: AppModel) {
                 ProfileTile(
                     name = profile.name,
                     imageUrl = if (profile.hasImage) vm.api.userImageUrl(profile.id) else null,
+                    note = if (vm.store.hasSavedSession(profile.id)) "Signed in" else "",
                     requester = if (profile == vm.profiles.first()) first else null
                 ) {
-                    if (profile.hasPassword) passwordFor = profile else vm.signIn(profile.name, "")
+                    when {
+                        vm.resumeProfile(profile) -> Unit
+                        profile.hasPassword -> passwordFor = profile
+                        else -> vm.signIn(profile.name, "")
+                    }
                 }
             }
             item {
@@ -535,14 +553,14 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
     }
     val featured = vm.featured() ?: hero
     Column(Modifier.fillMaxSize().padding(top = SafeY)) {
-        Column(Modifier.fillMaxWidth(0.62f).height(196.dp), verticalArrangement = Arrangement.Bottom) {
+        Column(Modifier.fillMaxWidth(0.62f).height(210.dp), verticalArrangement = Arrangement.Bottom) {
             val kicker = when {
                 focusedShelf != null -> focusedShelf!!
                 feed.resumeFirst -> "Continue watching"
                 else -> "Recently added"
             }
             Kicker(kicker)
-            Text(featured.headline, style = TvType.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            TitleArt(vm, featured, maxLines = 2)
             if (featured.isEpisode) Text(featured.cardTitle, style = TvType.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(8.dp))
             MetaLine(featured, showEnds = featured.positionTicks > 0)
@@ -605,7 +623,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                                 contentPadding = PaddingValues(start = 2.dp, end = 40.dp, top = 10.dp, bottom = 8.dp),
                                 modifier = Modifier.focusRestorer().focusGroup()
                             ) {
-                                items(shelf.movies, key = { it.id }) { movie ->
+                                itemsIndexed(shelf.movies, key = { _, movie -> movie.id }) { index, movie ->
                                     val key = "home/${shelf.title}/${movie.id}"
                                     PosterCard(
                                         movie,
@@ -615,6 +633,7 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
                                             focusedId = movie.id
                                             focusedShelf = shelf.title
                                             vm.hover(vm.screenFor(movie))
+                                            vm.prefetchAround(shelf.movies, index, ahead = 5)
                                         }
                                     ) {
                                         vm.rememberFocus(key)
@@ -641,11 +660,17 @@ private fun HomeScreen(vm: AppModel, play: (String, Boolean) -> Unit) {
 
 @Composable
 private fun EmptyLibrary(vm: AppModel) {
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+    Column(Modifier.fillMaxSize(), verticalArrangement = if (vm.busy) Arrangement.Top else Arrangement.Center) {
         if (vm.busy) {
-            CircularProgressIndicator(color = Cream, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
-            Spacer(Modifier.height(14.dp))
-            Text("Loading your library…", style = TvType.title)
+            // The shape of Home, so nothing jumps when the library arrives. Only the very first start
+            // shows this: after that the last Home is kept on disk and shows at once.
+            Column(Modifier.fillMaxSize().padding(top = SafeY + 60.dp)) {
+                Box(Modifier.width(320.dp).height(34.dp).clip(RoundedCornerShape(6.dp)).background(PosterBlank))
+                Spacer(Modifier.height(12.dp))
+                Box(Modifier.width(220.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(PosterBlank))
+                Spacer(Modifier.height(40.dp))
+                SkeletonRows()
+            }
             return
         }
         Text("Nothing to watch yet", style = TvType.headline)
@@ -676,6 +701,21 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
     val first = remember { FocusRequester() }
     DefaultFocus(vm, restore, first, ready = items.isNotEmpty())
     val screenKey = vm.screen.key
+    var pickLetter by remember { mutableStateOf(false) }
+    // After a jump to a letter: scroll the first title starting with it into view; it takes focus as it appears.
+    val jump = vm.jumpTarget
+    LaunchedEffect(jump) {
+        val target = jump ?: return@LaunchedEffect
+        if (target.screenKey != screenKey) return@LaunchedEffect
+        // +1 for the header, which is the grid's first item.
+        runCatching { gridState.scrollToItem((target.index + 1).coerceAtMost(items.size)) }
+    }
+    if (pickLetter) {
+        PickerDialog("Jump to", LETTERS, selected = -1, onDismiss = { pickLetter = false }) {
+            pickLetter = false
+            vm.jumpToLetter(list, screenKey, LETTERS[it])
+        }
+    }
     LazyVerticalGrid(
         columns = GridCells.Fixed(6),
         state = gridState,
@@ -700,6 +740,8 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
                         }
                         TvButton("Sort: $sortName") { vm.cycleSort() }
                         TvButton("Unwatched only", selected = vm.unwatchedOnly) { vm.toggleUnwatched() }
+                        // Big libraries: straight to a letter instead of holding the arrow for a minute.
+                        if (vm.sort == "title" && list.total > 60) TvButton("Jump to letter") { pickLetter = true }
                     }
                 }
             }
@@ -723,8 +765,13 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
                 vm.api.posterUrl(movie),
                 modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
                 width = null,
-                autoFocus = restore == key,
-                onFocus = { vm.hover(vm.screenFor(movie)) }
+                autoFocus = restore == key || (jump?.screenKey == screenKey && jump.index == index),
+                onFocus = {
+                    if (jump?.index == index) vm.jumpTarget = null
+                    vm.hover(vm.screenFor(movie))
+                    // The next two rows' posters, so a held arrow finds them already loaded.
+                    vm.prefetchAround(items, index, ahead = 12, backdrop = false)
+                }
             ) {
                 vm.rememberFocus(key)
                 vm.openItem(movie)
@@ -733,11 +780,41 @@ private fun GridScreen(vm: AppModel, title: String, kicker: String = "", tools: 
     }
 }
 
+private val LETTERS = listOf("#") + ('A'..'Z').map { it.toString() }
+
 @Composable
 private fun SearchScreen(vm: AppModel) {
     val restore = rememberRestore(vm)
     val firstKey = remember { FocusRequester() }
-    DefaultFocus(vm, restore, firstKey)
+    val micKey = remember { FocusRequester() }
+    val context = LocalContext.current
+    // Speaking is far quicker than spelling with arrows. Most TV remotes have a microphone button,
+    // and the box's own recogniser does the listening; nothing is sent anywhere by Snug.
+    val canSpeak = remember {
+        context.packageManager.queryIntentActivities(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH), 0).isNotEmpty()
+    }
+    val listen = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val heard = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+        if (!heard.isNullOrBlank()) vm.type(heard.trim())
+    }
+    val startListening = {
+        runCatching {
+            listen.launch(
+                Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a title, a person or a genre")
+            )
+        }
+        Unit
+    }
+    // The remote's search or microphone key opened Search: start listening straight away.
+    LaunchedEffect(vm.voiceRequest) {
+        if (vm.voiceRequest > 0 && canSpeak) {
+            vm.voiceRequest = 0
+            startListening()
+        }
+    }
+    DefaultFocus(vm, restore, if (canSpeak) micKey else firstKey)
     val results = vm.searchResults
     Row(Modifier.fillMaxSize().padding(top = SafeY)) {
         Column(Modifier.width(250.dp)) {
@@ -762,6 +839,10 @@ private fun SearchScreen(vm: AppModel) {
                 )
             }
             Spacer(Modifier.height(14.dp))
+            if (canSpeak) {
+                TvButton("Search by voice", Modifier.fillMaxWidth(), icon = R.drawable.ic_mic, primary = true, focusRequester = micKey) { startListening() }
+                Spacer(Modifier.height(10.dp))
+            }
             Keyboard(firstKey) { key ->
                 vm.type(when (key) {
                     "⌫" -> vm.query.dropLast(1)
@@ -774,7 +855,20 @@ private fun SearchScreen(vm: AppModel) {
         Spacer(Modifier.width(28.dp))
         Box(Modifier.weight(1f)) {
             if (vm.query.isBlank()) {
-                Text("Type with the remote. Results appear here.", style = TvType.body, modifier = Modifier.padding(top = 44.dp))
+                Column(Modifier.padding(top = 44.dp)) {
+                    Text(
+                        if (canSpeak) "Speak, or type with the remote. Results appear here." else "Type with the remote. Results appear here.",
+                        style = TvType.body
+                    )
+                    if (vm.recentSearches.isNotEmpty()) {
+                        Kicker("Recent searches", Modifier.padding(top = 24.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            vm.recentSearches.forEach { recent ->
+                                TvButton(recent, icon = R.drawable.ic_search) { vm.type(recent) }
+                            }
+                        }
+                    }
+                }
             } else if (results.isEmpty() && vm.searchPending) {
                 Text("Searching…", style = TvType.body, modifier = Modifier.padding(top = 44.dp))
             } else if (results.isEmpty()) {
@@ -796,6 +890,7 @@ private fun SearchScreen(vm: AppModel) {
                             autoFocus = restore == key,
                             onFocus = { vm.hover(vm.screenFor(movie)) }
                         ) {
+                            vm.rememberSearch()
                             vm.rememberFocus(key)
                             vm.openItem(movie)
                         }
@@ -838,7 +933,7 @@ private fun KeyCap(label: String, modifier: Modifier, requester: FocusRequester?
             .clickable(interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, style = TvType.button, color = if (focused) Color(0xFF111111) else Cream)
+        Text(label, style = TvType.button, color = if (focused) OnFocus else Cream)
     }
 }
 
@@ -905,7 +1000,7 @@ private fun GenreTile(
     val own = remember { FocusRequester() }
     val target = requester ?: own
     LaunchedEffect(autoFocus) { if (autoFocus) runCatching { target.requestFocus() } }
-    val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "genre")
+    val scale by animateFloatAsState(if (focused) FocusScale.Card else 1f, Motion.focus(), label = "genre")
     Box(
         Modifier
             .focusRequester(target)
@@ -916,8 +1011,9 @@ private fun GenreTile(
                 scaleX = scale
                 scaleY = scale
             }
+            .drawBehind { if (focused) drawFocusGlow(12.dp) }
             .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF1B1D24))
+            .background(PosterBlank)
             .border(if (focused) 2.dp else 0.5.dp, if (focused) Color.White else Line, RoundedCornerShape(12.dp))
             .clickable(interaction, indication = null, onClick = onClick)
     ) {
@@ -995,16 +1091,17 @@ private fun DetailBody(
             Column(Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth(0.66f)) {
                     if (movie.genres.isNotEmpty()) Kicker(movie.genres.take(3).joinToString("  ·  "))
-                    Text(movie.name, style = TvType.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    TitleArt(vm, movie, maxLines = 2)
                     Spacer(Modifier.height(10.dp))
                     MetaLine(movie)
+                    val badges = movie.formatBadges
+                    if (badges.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Badges(badges)
+                    }
                     if (movie.progress > 0.02f) {
                         Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                Modifier.width(160.dp).height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.25f))
-                            ) {
-                                Box(Modifier.fillMaxHeight().fillMaxWidth(movie.progress).background(Color.White))
-                            }
+                            ProgressBar(movie.progress, Modifier.width(160.dp))
                             Text(
                                 "   ${runtimeLabel((movie.runtimeTicks - movie.positionTicks).coerceAtLeast(0L))} left",
                                 style = TvType.small
@@ -1037,6 +1134,21 @@ private fun DetailBody(
                     }
                     TvButton(if (movie.played) "Watched" else "Mark watched", icon = R.drawable.ic_check, selected = movie.played) {
                         vm.togglePlayed(movie)
+                    }
+                    val localTrailer = vm.trailers[movie.id]?.firstOrNull()
+                    val remoteTrailer = movie.remoteTrailers.firstOrNull()
+                    if (localTrailer != null || remoteTrailer != null) {
+                        val context = LocalContext.current
+                        TvButton("Trailer", icon = R.drawable.ic_trailer) {
+                            if (localTrailer != null) {
+                                play(localTrailer.id, true)
+                            } else if (remoteTrailer != null) {
+                                // YouTube trailers open in the YouTube app, which plays them best.
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(remoteTrailer)))
+                                }.onFailure { vm.message = "No app on this TV can play that trailer." }
+                            }
+                        }
                     }
                 }
                 if (vm.message.isNotBlank()) Text(vm.message, style = TvType.body, color = Cream, modifier = Modifier.padding(top = 10.dp))
@@ -1120,7 +1232,7 @@ private fun SeriesScreen(vm: AppModel, screen: Screen.Series, play: (String, Boo
                 Column(Modifier.fillMaxWidth()) {
                     Column(Modifier.fillMaxWidth(0.66f)) {
                         if (series.genres.isNotEmpty()) Kicker(series.genres.take(3).joinToString("  ·  "))
-                        Text(series.name, style = TvType.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        TitleArt(vm, series, maxLines = 2)
                         Spacer(Modifier.height(10.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             val numbered = view.seasons.count { (it.season ?: 0) > 0 }.takeIf { it > 0 } ?: view.seasons.size
@@ -1193,7 +1305,7 @@ private fun SeriesScreen(vm: AppModel, screen: Screen.Series, play: (String, Boo
                 }
                 else -> items(episodes, key = { it.id }) { episode ->
                     val key = "${screen.key}/${episode.id}"
-                    EpisodeRow(vm, episode, autoFocus = restore == key || episode.id == landing) {
+                    EpisodeRow(vm, episode, upNext = episode.id == view.next?.id && !episode.played, autoFocus = restore == key || episode.id == landing) {
                         vm.rememberFocus(key)
                         play(episode.id, false)
                     }
@@ -1201,6 +1313,28 @@ private fun SeriesScreen(vm: AppModel, screen: Screen.Series, play: (String, Boo
             }
         }
     }
+}
+
+/**
+ * The title in big type, or its logo when the library has one: a film's own lettering looks far
+ * better than any font. Falls back to the text if the logo doesn't load.
+ */
+@Composable
+private fun TitleArt(vm: AppModel, movie: Movie, maxLines: Int) {
+    val logo = vm.api.logoUrl(movie)
+    var failed by remember(logo) { mutableStateOf(false) }
+    if (logo == null || failed) {
+        Text(movie.headline, style = TvType.display, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+        return
+    }
+    AsyncImage(
+        model = logo,
+        contentDescription = movie.headline,
+        contentScale = ContentScale.Fit,
+        alignment = Alignment.CenterStart,
+        onError = { failed = true },
+        modifier = Modifier.padding(vertical = 4.dp).height(72.dp).fillMaxWidth(0.8f)
+    )
 }
 
 private fun seriesYears(series: Movie): String {
@@ -1214,7 +1348,7 @@ private fun seriesYears(series: Movie): String {
 }
 
 @Composable
-private fun EpisodeRow(vm: AppModel, episode: Movie, autoFocus: Boolean, onClick: () -> Unit) {
+private fun EpisodeRow(vm: AppModel, episode: Movie, upNext: Boolean, autoFocus: Boolean, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val requester = remember { FocusRequester() }
@@ -1239,24 +1373,23 @@ private fun EpisodeRow(vm: AppModel, episode: Movie, autoFocus: Boolean, onClick
                 .width(200.dp)
                 .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xFF1B1D24))
+                .background(PosterBlank)
         ) {
             val still = vm.api.imageUrl(episode.id, "Primary", episode.primaryTag, 420)
             if (still != null) {
-                AsyncImage(model = still, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                val blur = rememberBlurHashPainter(episode.primaryHash, PosterBlankPainter, width = 32, height = 18)
+                AsyncImage(model = still, contentDescription = null, contentScale = ContentScale.Crop, placeholder = blur, modifier = Modifier.fillMaxSize())
             }
             if (episode.progress > 0.02f) {
-                Box(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                        .fillMaxWidth()
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color.Black.copy(alpha = 0.5f))
-                ) {
-                    Box(Modifier.fillMaxHeight().fillMaxWidth(episode.progress).background(Color.White))
-                }
+                ProgressBar(episode.progress, Modifier.align(Alignment.BottomCenter).padding(horizontal = 8.dp, vertical = 6.dp))
+            }
+            if (upNext) {
+                Text(
+                    "UP NEXT",
+                    style = TvType.kicker,
+                    color = OnFocus,
+                    modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(5.dp)).background(Accent).padding(horizontal = 6.dp, vertical = 2.dp)
+                )
             }
             if (episode.played) {
                 Box(
@@ -1300,6 +1433,7 @@ private fun SettingsScreen(vm: AppModel) {
     var askOsPass by remember { mutableStateOf(false) }
     var pendingOsUser by remember { mutableStateOf("") }
     var askServer by remember { mutableStateOf(false) }
+    var askSignOut by remember { mutableStateOf(false) }
     val cueNames = listOf(1f to "Small", 1.35f to "Medium", 1.7f to "Large", 2.1f to "Extra large")
     LazyColumn(
         contentPadding = PaddingValues(top = SafeY, bottom = 48.dp),
@@ -1366,8 +1500,10 @@ private fun SettingsScreen(vm: AppModel) {
         if (vm.store.serverName.isNotBlank()) item {
             Text("Jellyfin calls this server \u201c${vm.store.serverName}\u201d.", style = TvType.small, modifier = Modifier.padding(start = 4.dp))
         }
-        item { SettingRow("Sign out", vm.store.userName) { vm.signOut() } }
-        item { Text("Snug 1.11.0 · ${vm.api.let { "tv.livingroom.watch" }}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+        // Switching keeps this profile signed in on the TV, so coming back to it needs no password.
+        item { SettingRow("Switch profile", vm.store.userName) { vm.switchProfile() } }
+        item { SettingRow("Sign out", "") { askSignOut = true } }
+        item { Text("Snug ${BuildConfig.VERSION_NAME} · ${BuildConfig.APPLICATION_ID}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
         PickerDialog(
@@ -1391,6 +1527,17 @@ private fun SettingsScreen(vm: AppModel) {
         TextEntryDialog("OpenSubtitles password", "", vm.osHint, password = true, onDismiss = { askOsPass = false }) {
             askOsPass = false
             vm.saveOpenSubtitles(pendingOsUser, it)
+        }
+    }
+    if (askSignOut) {
+        PickerDialog(
+            "Sign ${vm.store.userName.ifBlank { "this profile" }} out? The password is needed to come back.",
+            listOf("Sign out", "Cancel"),
+            selected = -1,
+            onDismiss = { askSignOut = false }
+        ) {
+            askSignOut = false
+            if (it == 0) vm.signOut()
         }
     }
     if (askServer) {

@@ -49,7 +49,13 @@ data class MediaStreamInfo(
     val isForced: Boolean,
     val isExternal: Boolean,
     val channels: Int,
-    val frameRate: Float = 0f
+    val frameRate: Float = 0f,
+    val width: Int = 0,
+    val height: Int = 0,
+    /** Jellyfin's name for the picture's range: SDR, HDR10, HDR10Plus, HLG, DOVI, DOVIWithHDR10 and so on. */
+    val videoRangeType: String = "",
+    val profile: String = "",
+    val displayTitle: String = ""
 ) {
     fun isTextSubtitle(): Boolean {
         if (type != "Subtitle") return false
@@ -125,7 +131,19 @@ data class Movie(
     val backdropOwner: String? = null,
     val unplayedCount: Int = 0,
     val endYear: Int? = null,
-    val status: String = ""
+    val status: String = "",
+    /** BlurHash of the item's own Primary image, painted while the real one loads. */
+    val primaryHash: String? = null,
+    val seriesPrimaryHash: String? = null,
+    val backdropHash: String? = null,
+    /** The title's logo (a transparent picture of its name), and whose it is: an episode borrows its show's. */
+    val logoTag: String? = null,
+    val logoOwner: String? = null,
+    /** Trailers on YouTube or elsewhere, as links. Local trailer files are looked up separately. */
+    val remoteTrailers: List<String> = emptyList(),
+    val localTrailerCount: Int = 0,
+    /** Jellyfin's trickplay pictures (10.9+), for seeking. Only on the full item. */
+    val trickplay: TrickplayInfo? = null
 ) {
     val isSeries: Boolean get() = type == "Series"
     val isEpisode: Boolean get() = type == "Episode"
@@ -144,6 +162,56 @@ data class Movie(
         get() = if (isEpisode && seriesName.isNotBlank()) seriesName else name
     val progress: Float
         get() = if (runtimeTicks > 0L && positionTicks > 0L) (positionTicks.toFloat() / runtimeTicks).coerceIn(0f, 1f) else 0f
+
+    /** The BlurHash for the picture [JellyfinClient.posterUrl] picks. */
+    val posterHash: String?
+        get() = if (isEpisode && seriesId != null && seriesPrimaryTag != null) seriesPrimaryHash else primaryHash
+
+    /** Short labels for what the file is: 4K, Dolby Vision, HDR10, Atmos, 5.1. Empty until the full item has loaded. */
+    val formatBadges: List<String>
+        get() {
+            val video = streams.firstOrNull { it.type == "Video" }
+            val audio = streams.filter { it.type == "Audio" }.maxByOrNull { it.channels }
+            return buildList {
+                if (video != null) {
+                    when {
+                        video.width >= 3200 || video.height >= 1800 -> add("4K")
+                        video.width >= 1800 || video.height >= 1000 -> add("HD")
+                    }
+                    val range = video.videoRangeType
+                    when {
+                        range.startsWith("DOVI", ignoreCase = true) -> add("Dolby Vision")
+                        range.equals("HDR10Plus", ignoreCase = true) -> add("HDR10+")
+                        range.equals("HDR10", ignoreCase = true) -> add("HDR10")
+                        range.equals("HLG", ignoreCase = true) -> add("HLG")
+                    }
+                }
+                if (audio != null) {
+                    val atmos = "atmos" in "${audio.profile} ${audio.displayTitle} ${audio.title}".lowercase(Locale.US)
+                    if (atmos) add("Atmos")
+                    when (audio.channels) {
+                        8 -> add("7.1")
+                        6 -> add("5.1")
+                    }
+                }
+            }
+        }
+}
+
+/**
+ * One set of Jellyfin trickplay pictures: thumbnails every [intervalMs], packed [tileWidth] x [tileHeight]
+ * to a sheet at /Videos/{id}/Trickplay/{width}/{sheet}.jpg.
+ */
+data class TrickplayInfo(
+    val sourceId: String,
+    val width: Int,
+    val height: Int,
+    val tileWidth: Int,
+    val tileHeight: Int,
+    val count: Int,
+    val intervalMs: Long
+) {
+    val perSheet: Int get() = (tileWidth * tileHeight).coerceAtLeast(1)
 }
 
 data class MediaSourceInfo(
@@ -227,10 +295,16 @@ private val TEXT_SUBS = setOf("subrip", "srt", "ass", "ssa", "vtt", "webvtt", "m
 fun parseMovie(json: JSONObject): Movie {
     val user = json.optJSONObject("UserData")
     val imageTags = json.optJSONObject("ImageTags")
+    val hashes = json.optJSONObject("ImageBlurHashes").toBlurHashes()
     val backdrops = json.optJSONArray("BackdropImageTags")
     val ownBackdrop = backdrops?.optString(0)?.takeIf { it.isNotBlank() }
     val parentBackdrop = json.optJSONArray("ParentBackdropImageTags")?.optString(0)?.takeIf { it.isNotBlank() }
     val type = json.optString("Type").ifBlank { "Movie" }
+    val primaryTag = imageTags?.optString("Primary")?.takeIf { it.isNotBlank() }
+    val seriesPrimaryTag = json.optString("SeriesPrimaryImageTag").takeIf { it.isNotBlank() }
+    val ownLogo = imageTags?.optString("Logo")?.takeIf { it.isNotBlank() }
+    val parentLogo = json.optString("ParentLogoImageTag").takeIf { it.isNotBlank() }
+    val backdropTag = ownBackdrop ?: parentBackdrop
     return Movie(
         id = json.optString("Id"),
         name = json.optString("Name"),
@@ -245,8 +319,8 @@ fun parseMovie(json: JSONObject): Movie {
         people = json.optJSONArray("People").toPeople(),
         studios = json.optJSONArray("Studios").toNames(),
         dateCreated = json.optString("DateCreated"),
-        primaryTag = imageTags?.optString("Primary")?.takeIf { it.isNotBlank() },
-        backdropTag = ownBackdrop ?: parentBackdrop,
+        primaryTag = primaryTag,
+        backdropTag = backdropTag,
         played = user?.optBoolean("Played") == true,
         favorite = user?.optBoolean("IsFavorite") == true,
         positionTicks = user?.optLong("PlaybackPositionTicks") ?: 0L,
@@ -256,7 +330,7 @@ fun parseMovie(json: JSONObject): Movie {
         type = type,
         seriesId = json.optString("SeriesId").takeIf { it.isNotBlank() },
         seriesName = json.optString("SeriesName"),
-        seriesPrimaryTag = json.optString("SeriesPrimaryImageTag").takeIf { it.isNotBlank() },
+        seriesPrimaryTag = seriesPrimaryTag,
         seasonId = json.optString("SeasonId").takeIf { it.isNotBlank() },
         season = json.optIntOrNull(if (type == "Season") "IndexNumber" else "ParentIndexNumber"),
         episode = if (type == "Episode") json.optIntOrNull("IndexNumber") else null,
@@ -265,8 +339,125 @@ fun parseMovie(json: JSONObject): Movie {
         endYear = parseServerTime(json.optString("EndDate")).takeIf { it > 0L }?.let {
             java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { timeInMillis = it }.get(java.util.Calendar.YEAR)
         },
-        status = json.optString("Status")
+        status = json.optString("Status"),
+        primaryHash = primaryTag?.let { hashes[it] },
+        seriesPrimaryHash = seriesPrimaryTag?.let { hashes[it] },
+        backdropHash = backdropTag?.let { hashes[it] },
+        logoTag = ownLogo ?: parentLogo,
+        logoOwner = if (ownLogo == null && parentLogo != null) json.optString("ParentLogoItemId").takeIf { it.isNotBlank() } else null,
+        remoteTrailers = json.optJSONArray("RemoteTrailers").toTrailerUrls(),
+        localTrailerCount = json.optInt("LocalTrailerCount"),
+        trickplay = json.optJSONObject("Trickplay").toTrickplay()
     )
+}
+
+/** Picks the trickplay set nearest 320 pixels wide: sharp enough on a TV, small enough to load while seeking. */
+private fun JSONObject?.toTrickplay(): TrickplayInfo? {
+    if (this == null) return null
+    val options = buildList {
+        for (source in keys()) {
+            val widths = optJSONObject(source) ?: continue
+            for (key in widths.keys()) {
+                val info = widths.optJSONObject(key) ?: continue
+                val width = info.optInt("Width", key.toIntOrNull() ?: 0)
+                val interval = info.optLong("Interval")
+                val count = info.optInt("ThumbnailCount")
+                if (width <= 0 || interval <= 0L || count <= 0) continue
+                add(
+                    TrickplayInfo(
+                        sourceId = source,
+                        width = width,
+                        height = info.optInt("Height"),
+                        tileWidth = info.optInt("TileWidth", 10).coerceAtLeast(1),
+                        tileHeight = info.optInt("TileHeight", 10).coerceAtLeast(1),
+                        count = count,
+                        intervalMs = interval
+                    )
+                )
+            }
+        }
+    }
+    return options.minByOrNull { kotlin.math.abs(it.width - 320) }
+}
+
+/** Every BlurHash in Jellyfin's ImageBlurHashes ({"Primary": {tag: hash}, ...}), by image tag. */
+private fun JSONObject?.toBlurHashes(): Map<String, String> {
+    if (this == null) return emptyMap()
+    val found = HashMap<String, String>()
+    for (kind in keys()) {
+        val byTag = optJSONObject(kind) ?: continue
+        for (tag in byTag.keys()) byTag.optString(tag).takeIf { it.isNotBlank() }?.let { found[tag] = it }
+    }
+    return found
+}
+
+private fun JSONArray?.toTrailerUrls(): List<String> {
+    if (this == null) return emptyList()
+    return buildList {
+        for (i in 0 until length()) {
+            val url = optJSONObject(i)?.optString("Url").orEmpty()
+            if (url.startsWith("http")) add(url)
+        }
+    }
+}
+
+/**
+ * The inverse of [parseMovie] for what lists and Home show, so the last Home can be kept on disk and
+ * shown at once on the next start. Cast, chapters and streams are left out: they load with the full item.
+ */
+fun movieToJson(movie: Movie): JSONObject {
+    val json = JSONObject()
+        .put("Id", movie.id)
+        .put("Name", movie.name)
+        .put("SortName", movie.sortName)
+        .put("Overview", movie.overview)
+        .put("RunTimeTicks", movie.runtimeTicks)
+        .put("OfficialRating", movie.officialRating)
+        .put("DateCreated", movie.dateCreated)
+        .put("Type", movie.type)
+        .put("Status", movie.status)
+        .put("SeriesName", movie.seriesName)
+    movie.year?.let { json.put("ProductionYear", it) }
+    movie.communityRating?.let { json.put("CommunityRating", it) }
+    if (movie.tagline.isNotBlank()) json.put("Taglines", JSONArray().put(movie.tagline))
+    json.put("Genres", JSONArray(movie.genres))
+    movie.seriesId?.let { json.put("SeriesId", it) }
+    movie.seriesPrimaryTag?.let { json.put("SeriesPrimaryImageTag", it) }
+    movie.seasonId?.let { json.put("SeasonId", it) }
+    movie.season?.let { json.put(if (movie.type == "Season") "IndexNumber" else "ParentIndexNumber", it) }
+    movie.episode?.let { json.put("IndexNumber", it) }
+    movie.endYear?.let { json.put("EndDate", "$it-06-01T00:00:00") }
+    val tags = JSONObject()
+    movie.primaryTag?.let { tags.put("Primary", it) }
+    val hashes = JSONObject()
+    fun hash(tag: String?, value: String?) { if (tag != null && value != null) hashes.put(tag, value) }
+    hash(movie.primaryTag, movie.primaryHash)
+    hash(movie.seriesPrimaryTag, movie.seriesPrimaryHash)
+    hash(movie.backdropTag, movie.backdropHash)
+    if (movie.logoTag != null) {
+        if (movie.logoOwner == null) tags.put("Logo", movie.logoTag) else json.put("ParentLogoImageTag", movie.logoTag).put("ParentLogoItemId", movie.logoOwner)
+    }
+    json.put("ImageTags", tags)
+    json.put("ImageBlurHashes", JSONObject().put("Any", hashes))
+    if (movie.backdropTag != null) {
+        if (movie.backdropOwner == null) {
+            json.put("BackdropImageTags", JSONArray().put(movie.backdropTag))
+        } else {
+            json.put("ParentBackdropImageTags", JSONArray().put(movie.backdropTag)).put("ParentBackdropItemId", movie.backdropOwner)
+        }
+    }
+    val user = JSONObject()
+        .put("Played", movie.played)
+        .put("IsFavorite", movie.favorite)
+        .put("PlaybackPositionTicks", movie.positionTicks)
+        .put("UnplayedItemCount", movie.unplayedCount)
+    if (movie.lastPlayed > 0L) {
+        val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        format.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        user.put("LastPlayedDate", format.format(java.util.Date(movie.lastPlayed)))
+    }
+    json.put("UserData", user)
+    return json
 }
 
 private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) optInt(key) else null
@@ -364,6 +555,11 @@ private fun JSONArray?.toStreams(): List<MediaStreamInfo> {
                     isForced = stream.optBoolean("IsForced"),
                     isExternal = stream.optBoolean("IsExternal"),
                     channels = stream.optInt("Channels"),
+                    width = stream.optInt("Width"),
+                    height = stream.optInt("Height"),
+                    videoRangeType = stream.optString("VideoRangeType").ifBlank { stream.optString("VideoRange") },
+                    profile = stream.optString("Profile"),
+                    displayTitle = stream.optString("DisplayTitle"),
                     frameRate = stream.optDouble("RealFrameRate").takeIf { it > 0.0 }?.toFloat()
                         ?: stream.optDouble("AverageFrameRate").takeIf { it > 0.0 }?.toFloat()
                         ?: 0f
