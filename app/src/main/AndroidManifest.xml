@@ -1,10 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Lets server discovery hear replies to its broadcast on boxes that filter them. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Drive mode reads films from a USB drive. Snug only opens the drive's Movies folder. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <!-- Snug Home (the launcher) reads the top shelf. Only apps signed with Snug's key may hold this. -->
     <permission
@@ -23,6 +31,7 @@
         android:allowBackup="true"
         android:banner="@drawable/ic_banner"
         android:largeHeap="true"
+        android:requestLegacyExternalStorage="true"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"

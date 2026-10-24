@@ -15,7 +15,7 @@ data class ShelfItem(
     val id: String,
     val title: String,
     val subtitle: String,
-    /** A wide backdrop from the Jellyfin server. */
+    /** A wide backdrop: from the Jellyfin server, or from TMDB for films on Snug's USB drive. */
     val image: String?,
     /** How much has been watched, 0 to 1; 0 for titles not started. */
     val progress: Float,

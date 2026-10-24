@@ -16,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -54,7 +55,11 @@ sealed interface QuickState {
 class AppModel(app: Application) : AndroidViewModel(app) {
     private val livingRoom = app as LivingRoomApp
     val store: SessionStore get() = livingRoom.store
-    val api: JellyfinClient get() = livingRoom.api
+    /** Where the movies come from: Jellyfin, or the USB drive in Drive mode. */
+    val api: Library get() = livingRoom.api
+    /** Signing in and profiles, which only Jellyfin has. */
+    val jellyfin: JellyfinClient get() = livingRoom.jellyfin
+    val drive: DriveLibrary get() = livingRoom.drive
 
     var screen by mutableStateOf<Screen>(Screen.Login)
         private set
@@ -114,6 +119,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var stillWatchingAfter by mutableStateOf(store.stillWatchingAfter)
     var themeMusic by mutableStateOf(store.themeMusic)
     var screensaverMinutes by mutableStateOf(store.screensaverMinutes)
+    /** Drive mode is on. */
+    var driveMode by mutableStateOf(store.driveMode)
+        private set
+    var driveStatus by mutableStateOf(drive.status.value)
+        private set
     /** Pictures to fetch ahead of time; the app shell hands them to the image loader. */
     var prefetchUrls by mutableStateOf<List<String>>(emptyList())
         private set
@@ -159,6 +169,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     val canBack: Boolean get() = backStack.isNotEmpty() || (screen != Screen.Home && screen != Screen.Login)
 
     init {
+        viewModelScope.launch { drive.status.collect { driveStatus = it } }
+        // New films on the drive, or their posters and plots arriving from TMDB.
+        viewModelScope.launch {
+            drive.changes.drop(1).collect { if (store.driveMode && screen != Screen.Login) refresh() }
+        }
         when {
             store.signedIn -> {
                 screen = Screen.Home
@@ -514,7 +529,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         if (screen == root) return
         restoreKey = focusMemory[root.key]
         screen = root
-        if (root == Screen.Settings) loadOpenSubtitles()
+        if (root == Screen.Settings && !api.local) loadOpenSubtitles()
     }
 
     /** The page for [item]: a movie's page, a show's page, or an episode within its show. */
@@ -638,6 +653,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         homeJob = viewModelScope.launch {
             busy = home == null
             try {
+                // Drive mode: see whether the drive is in and what's on it first.
+                if (api.local) withContext(Dispatchers.IO) { drive.scan() }
                 val fields = JellyfinClient.HOME_FIELDS
                 val rows = withContext(Dispatchers.IO) {
                     coroutineScope {
@@ -695,7 +712,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     signOut()
                     return@launch
                 }
-                message = if (home == null) {
+                message = if (api.local) {
+                    "Couldn't read the movie drive."
+                } else if (home == null) {
                     "Can't reach Jellyfin at ${store.server}. Check the server in Settings."
                 } else if (fromCache) {
                     "Showing your last Home: Jellyfin isn't answering right now."
@@ -793,7 +812,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             busy = true
             message = ""
             try {
-                profiles = withContext(Dispatchers.IO) { api.publicUsers() }
+                profiles = withContext(Dispatchers.IO) { jellyfin.publicUsers() }
             } catch (_: Exception) {
                 profiles = emptyList()
                 message = "Can't reach Jellyfin at ${store.server}."
@@ -813,7 +832,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             busy = true
             message = ""
             try {
-                withContext(Dispatchers.IO) { api.authenticate(username.trim(), password) }
+                withContext(Dispatchers.IO) { jellyfin.authenticate(username.trim(), password) }
                 busy = false
                 enterHome()
             } catch (error: Exception) {
@@ -867,7 +886,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             busy = true
             message = ""
-            val found = withContext(Dispatchers.IO) { candidates.firstNotNullOfOrNull { api.serverInfo(it) } }
+            val found = withContext(Dispatchers.IO) { candidates.firstNotNullOfOrNull { jellyfin.serverInfo(it) } }
             busy = false
             if (found == null) {
                 message = "No Jellyfin server answered at $shown. Check the address and that the server is on."
@@ -907,17 +926,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         quick = QuickState.Starting
         quickJob = viewModelScope.launch {
             try {
-                if (!withContext(Dispatchers.IO) { api.quickConnectEnabled() }) {
+                if (!withContext(Dispatchers.IO) { jellyfin.quickConnectEnabled() }) {
                     quick = QuickState.Off
                     return@launch
                 }
-                val request = withContext(Dispatchers.IO) { api.quickConnectStart() }
+                val request = withContext(Dispatchers.IO) { jellyfin.quickConnectStart() }
                 quick = QuickState.Waiting(request.code)
                 // The server forgets a request after about ten minutes; checking then fails and says so below.
-                while (!withContext(Dispatchers.IO) { api.quickConnectApproved(request.secret) }) {
+                while (!withContext(Dispatchers.IO) { jellyfin.quickConnectApproved(request.secret) }) {
                     delay(QUICK_POLL_MS)
                 }
-                withContext(Dispatchers.IO) { api.authenticateQuickConnect(request.secret) }
+                withContext(Dispatchers.IO) { jellyfin.authenticateQuickConnect(request.secret) }
                 quick = QuickState.Closed
                 enterHome()
             } catch (cancelled: CancellationException) {
@@ -989,11 +1008,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun clearSignedIn() {
+    /** Forgets everything on screen. [keepSession] keeps the Jellyfin sign-in, for switching to and from Drive mode. */
+    private fun clearSignedIn(keepSession: Boolean = false) {
         closeQuickConnect()
         // Snug Home's shelf belongs to whoever is signed in.
         ShelfCache.clear(getApplication())
-        store.clearSession()
+        if (!keepSession) store.clearSession()
         homeJob?.cancel()
         searchJob?.cancel()
         genreLoad?.cancel()
@@ -1020,6 +1040,64 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         listStates.clear()
         gridStates.clear()
         screen = Screen.Login
+    }
+
+    /** Switches to Drive mode: films from the USB drive. The Jellyfin sign-in stays for coming back. */
+    fun useDrive() {
+        clearSignedIn(keepSession = true)
+        livingRoom.background.launch { WatchNext.clear(getApplication()) }
+        store.driveMode = true
+        driveMode = true
+        message = ""
+        homeCache.load(SessionStore.DRIVE_USER)?.let { cached ->
+            home = cached
+            fromCache = true
+            cached.shelves.forEach { keep(it.movies) }
+        }
+        enterHome()
+    }
+
+    /** Back to Jellyfin: straight to its Home when still signed in, else to sign-in. */
+    fun leaveDrive() {
+        clearSignedIn(keepSession = true)
+        livingRoom.background.launch { WatchNext.clear(getApplication()) }
+        store.driveMode = false
+        driveMode = false
+        message = ""
+        if (store.signedIn) {
+            store.userId?.let { id -> homeCache.load(id) }?.let { cached ->
+                home = cached
+                fromCache = true
+                cached.shelves.forEach { keep(it.movies) }
+            }
+            enterHome()
+        } else {
+            backToProfiles()
+        }
+    }
+
+    /** Looks for the drive again, for when it is plugged in or out, or Snug was just allowed to read it. */
+    fun checkDrive() {
+        if (!store.driveMode) return
+        viewModelScope.launch {
+            val before = drive.status.value
+            withContext(Dispatchers.IO) { drive.scan() }
+            val after = drive.status.value
+            if (after.plugged != before.plugged || after.access != before.access) refresh()
+        }
+    }
+
+    fun rescanDrive() {
+        message = "Scanning the drive…"
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { drive.rescan() }
+            message = if (drive.status.value.plugged) "" else "The movie drive isn't plugged in."
+            refresh()
+        }
+    }
+
+    fun setTmdbKey(key: String) {
+        viewModelScope.launch(Dispatchers.IO) { drive.tmdbKey = key }
     }
 
     fun setControls(seconds: Int) {

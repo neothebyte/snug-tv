@@ -12,8 +12,13 @@ android {
         applicationId = "tv.livingroom.watch"
         minSdk = 24
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.14.0"
+        versionCode = 21
+        versionName = "1.15.0"
+
+        // Drive mode looks films up on TMDB. A key from ~/.gradle/gradle.properties is built in when
+        // there is one; otherwise it is typed in Settings on the TV.
+        val tmdbKey = providers.gradleProperty("TMDB_API_KEY").orElse(providers.environmentVariable("TMDB_API_KEY")).orNull.orEmpty()
+        buildConfigField("String", "TMDB_API_KEY", "\"${tmdbKey.replace("\"", "")}\"")
     }
 
     // Release key: from ~/.gradle/gradle.properties locally, or environment variables in CI.

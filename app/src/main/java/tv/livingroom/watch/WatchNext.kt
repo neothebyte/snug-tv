@@ -23,7 +23,7 @@ object WatchNext {
     private const val ASPECT_RATIO_16_9 = 0
 
     /** Makes the box's row match [items]: the first ten of Snug's Continue watching. Quietly does nothing where unsupported. */
-    fun sync(context: Context, api: JellyfinClient, items: List<Movie>) {
+    fun sync(context: Context, api: Library, items: List<Movie>) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         runCatching {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -66,7 +66,7 @@ object WatchNext {
     }
 
     @SuppressLint("RestrictedApi")
-    private fun program(context: Context, api: JellyfinClient, item: Movie): WatchNextProgram {
+    private fun program(context: Context, api: Library, item: Movie): WatchNextProgram {
         val open = Intent(OPEN_ITEM)
             .setPackage(context.packageName)
             .putExtra(EXTRA_ITEM_ID, item.id)
@@ -88,7 +88,8 @@ object WatchNext {
             item.season?.let { builder.setSeasonNumber(it) }
             item.episode?.let { builder.setEpisodeNumber(it) }
         }
-        val art = api.backdropUrl(item, 640) ?: api.imageUrl(item.id, "Primary", item.primaryTag, 640)
+        // The TV's home screen fetches the picture itself, so only a web address will do (not a file on the drive).
+        val art = (api.backdropUrl(item, 640) ?: api.imageUrl(item.id, "Primary", item.primaryTag, 640))?.takeIf { it.startsWith("http") }
         if (art != null) {
             builder.setPosterArtUri(Uri.parse(art))
                 .setPosterArtAspectRatio(ASPECT_RATIO_16_9)

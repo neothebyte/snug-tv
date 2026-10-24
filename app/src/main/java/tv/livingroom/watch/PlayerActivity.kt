@@ -78,6 +78,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -220,7 +221,8 @@ class PlayerActivity : ComponentActivity() {
             .build()
         return ExoPlayer.Builder(this, renderers)
             .setTrackSelector(selector)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+            // DefaultDataSource reads files too, for Drive mode; web addresses still go through [dataSource].
+            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(this, dataSource)))
             .setLoadControl(loadControl())
             // Holds a Wi-Fi lock while playing so the box doesn't drop into Wi-Fi power saving mid-film.
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -246,6 +248,8 @@ class PlayerActivity : ComponentActivity() {
                             loadingNote = ""
                             started = true
                             durationMs = player.duration.takeIf { it > 0 } ?: durationMs
+                            val length = player.duration
+                            movie?.let { current -> app.background.launch { api.noteDuration(current.id, length) } }
                             if (!sentStart) report()
                         }
                         if (state == Player.STATE_ENDED) {
@@ -316,7 +320,7 @@ class PlayerActivity : ComponentActivity() {
                 chapters = loaded.chapters
                 durationMs = loaded.runtimeTicks / 10_000L
                 subtitleIndex = preferredSubtitleIndex(loaded.streams, store.subtitleLanguage)
-                if (store.autoSubtitles && subtitleIndex == null) {
+                if (store.autoSubtitles && subtitleIndex == null && !api.local) {
                     val language = SUB_LANGS.find { it.code == store.subtitleLanguage }?.label ?: "English"
                     loadingNote = "Looking for $language subtitles…"
                     runCatching {
@@ -349,7 +353,8 @@ class PlayerActivity : ComponentActivity() {
             val previous = plan
             try {
                 val chosen = current.streams.find { it.type == "Subtitle" && it.index == subtitleIndex }
-                val bitmap = chosen != null && !chosen.isTextSubtitle()
+                // Image subtitles, and in Drive mode any track inside the file, are drawn by the player.
+                val bitmap = chosen != null && !chosen.appDrawn()
                 val next = withContext(Dispatchers.IO) {
                     previous?.let { api.stopEncoding(it.playSessionId) }
                     api.playback(current.id, atTicks, audioIndex, chosen?.takeIf { !bitmap }?.index, burn = false, mode = mode)
@@ -674,7 +679,7 @@ class PlayerActivity : ComponentActivity() {
         loading = false
         loadingNote = ""
         panel = null
-        error = playbackError(failure, libraryEmpty)
+        error = playbackError(failure, libraryEmpty, api.local)
     }
 
     private fun retry() {
@@ -843,7 +848,7 @@ class PlayerActivity : ComponentActivity() {
                 if (currentPlan.burn) prepare(currentTicks())
                 else report()
             }
-            stream.isTextSubtitle() -> {
+            stream.appDrawn() -> {
                 setTextTrackEnabled(false)
                 if (currentPlan.burn) {
                     prepare(currentTicks())
@@ -943,7 +948,7 @@ class PlayerActivity : ComponentActivity() {
         LaunchedEffect(loading, plan) {
             if (!loading || plan?.hls != true) return@LaunchedEffect
             delay(12_000)
-            if (loading && loadingNote.isBlank()) {
+            if (loading && loadingNote.isBlank() && !api.local) {
                 loadingNote = "Still starting. The server is converting this movie for this TV, which can be slow for 4K."
             }
         }
@@ -1427,7 +1432,8 @@ class PlayerActivity : ComponentActivity() {
                 add(PanelItem("Show earlier", "Now ${delayText(cueDelayMs)}") { cueDelayMs -= 250; stamp++ })
                 add(PanelItem("Show later", "Now ${delayText(cueDelayMs)}") { cueDelayMs += 250; stamp++ })
             }
-            add(PanelItem("Find more online", SUB_LANGS.find { it.code == store.subtitleLanguage }?.label ?: "") { searchOnline() })
+            // Online search goes through the Jellyfin server's OpenSubtitles plugin.
+            if (!api.local) add(PanelItem("Find more online", SUB_LANGS.find { it.code == store.subtitleLanguage }?.label ?: "") { searchOnline() })
         }
         Panel.Online -> remoteHits.take(30).map { hit -> PanelItem(hit.name.ifBlank { "Subtitle" }, hit.label().substringAfter(" · ", "")) { useRemote(hit) } }
         Panel.Audio -> audioStreams.map { stream ->
@@ -1469,6 +1475,7 @@ class PlayerActivity : ComponentActivity() {
         val reencoding = current.burn || current.mode == PlayMode.Transcode ||
             Regex("TranscodeReasons=[^&]*Video", RegexOption.IGNORE_CASE).containsMatchIn(url)
         val how = when {
+            !current.hls && api.local -> PanelItem("Straight from the USB drive", "The box reads the file itself. Nothing is converted.", action = close)
             !current.hls -> PanelItem("Straight from the drive", "The server isn't converting anything.", action = close)
             reencoding -> PanelItem("Converted by the server", "Hard work for the Pi, capped at 1080p.$because", action = close)
             current.mode == PlayMode.RemuxAudio -> PanelItem("Sound converted by the server", "The picture is untouched; converting sound is light work.$because", action = close)

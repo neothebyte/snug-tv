@@ -33,8 +33,19 @@ class SessionStore(context: Context) {
             prefs.edit().putString(KEY_TOKEN, value).apply()
         }
 
+    /**
+     * Drive mode is on: the movies come from a USB drive, not Jellyfin. The Jellyfin sign-in is kept
+     * underneath, so switching back needs no password.
+     */
+    var driveMode: Boolean
+        get() = prefs.getBoolean(KEY_DRIVE, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_DRIVE, value).apply()
+        }
+
+    /** The signed-in Jellyfin user, or [DRIVE_USER] in Drive mode, which keeps its own Home and searches. */
     var userId: String?
-        get() = prefs.getString(KEY_USER_ID, null)?.takeIf { it.isNotBlank() }
+        get() = if (driveMode) DRIVE_USER else prefs.getString(KEY_USER_ID, null)?.takeIf { it.isNotBlank() }
         set(value) {
             prefs.edit().putString(KEY_USER_ID, value).apply()
         }
@@ -112,7 +123,7 @@ class SessionStore(context: Context) {
         }
 
     val signedIn: Boolean
-        get() = token != null && userId != null
+        get() = driveMode || (token != null && userId != null)
 
     fun saveSession(accessToken: String, id: String, name: String) {
         val saved = savedSessions().put(id, JSONObject().put("token", accessToken).put("name", name))
@@ -172,6 +183,8 @@ class SessionStore(context: Context) {
         }
 
     companion object {
+        const val DRIVE_USER = "drive"
+        private const val KEY_DRIVE = "driveMode"
         private const val LEGACY_SERVER = "http://192.168.1.42:8096"
         private const val KEY_SERVER = "server"
         private const val KEY_SERVER_NAME = "serverName"

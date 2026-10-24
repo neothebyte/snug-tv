@@ -15,7 +15,7 @@ class JellyfinClient(
     private val store: SessionStore,
     private val http: OkHttpClient,
     private val codecs: () -> DeviceCodecs
-) {
+) : Library {
     @Volatile private var serverVersion: String? = null
     @Volatile private var versionFor: String? = null
 
@@ -76,22 +76,22 @@ class JellyfinClient(
     }
 
     /** One page of movies, filtered and sorted by the server. */
-    fun movies(
-        start: Int = 0,
+    override fun movies(
+        start: Int,
         limit: Int,
-        sortBy: String = "SortName",
-        sortOrder: String = "Ascending",
-        filters: String? = null,
-        genre: String? = null,
-        person: String? = null,
-        personType: String? = null,
-        personIds: List<String> = emptyList(),
-        search: String? = null,
-        fields: String = GRID_FIELDS,
-        countTotal: Boolean = true,
-        types: String = "Movie",
-        nameStartsWith: String? = null,
-        nameLessThan: String? = null
+        sortBy: String,
+        sortOrder: String,
+        filters: String?,
+        genre: String?,
+        person: String?,
+        personType: String?,
+        personIds: List<String>,
+        search: String?,
+        fields: String,
+        countTotal: Boolean,
+        types: String,
+        nameStartsWith: String?,
+        nameLessThan: String?
     ): MoviePage {
         val userId = store.userId ?: error("Sign in again.")
         val query = buildString {
@@ -118,14 +118,14 @@ class JellyfinClient(
      * none starts with it. Asks for that title's own sort name first, so the count matches the
      * server's ordering whatever case it keeps sort names in.
      */
-    fun countBefore(letter: String, types: String, filters: String?): Int? {
+    override fun countBefore(letter: String, types: String, filters: String?): Int? {
         val first = movies(limit = 1, filters = filters, types = types, nameStartsWith = letter, fields = "SortName", countTotal = false)
             .items.firstOrNull() ?: return null
         val sortName = first.sortName.ifBlank { first.name }
         return movies(limit = 1, filters = filters, types = types, nameLessThan = sortName, fields = "SortName").total
     }
 
-    fun genres(): List<String> {
+    override fun genres(): List<String> {
         val userId = store.userId ?: error("Sign in again.")
         val json = JSONObject(call("GET", "/Genres?UserId=$userId&IncludeItemTypes=Movie&Recursive=true&SortBy=SortName"))
         val array = json.optJSONArray("Items") ?: JSONArray()
@@ -138,7 +138,7 @@ class JellyfinClient(
     }
 
     /** Ids of people whose name matches [search]. */
-    fun findPeople(search: String, limit: Int): List<String> {
+    override fun findPeople(search: String, limit: Int): List<String> {
         val userId = store.userId ?: error("Sign in again.")
         val json = JSONObject(call("GET", "/Persons?UserId=$userId&SearchTerm=${encode(search)}&Limit=$limit"))
         val array = json.optJSONArray("Items") ?: JSONArray()
@@ -150,7 +150,7 @@ class JellyfinClient(
         }
     }
 
-    fun similar(id: String, limit: Int): List<Movie> {
+    override fun similar(id: String, limit: Int): List<Movie> {
         val userId = store.userId ?: error("Sign in again.")
         val json = JSONObject(call("GET", "/Items/$id/Similar?UserId=$userId&Limit=$limit&Fields=$GRID_FIELDS"))
         val array = json.optJSONArray("Items") ?: JSONArray()
@@ -164,7 +164,7 @@ class JellyfinClient(
     }
 
     /** Movies and episodes that were stopped part-way, most recent first. */
-    fun resume(limit: Int, fields: String = HOME_FIELDS): List<Movie> {
+    override fun resume(limit: Int, fields: String): List<Movie> {
         val userId = store.userId ?: error("Sign in again.")
         val json = JSONObject(
             call("GET", "/Users/$userId/Items/Resume?Limit=$limit&MediaTypes=Video&IncludeItemTypes=Movie,Episode&Fields=$fields$IMAGES")
@@ -173,20 +173,20 @@ class JellyfinClient(
     }
 
     /** The next unwatched episode of each show being watched, or of one show when [seriesId] is given. */
-    fun nextUp(limit: Int, seriesId: String? = null, fields: String = HOME_FIELDS): List<Movie> {
+    override fun nextUp(limit: Int, seriesId: String?, fields: String): List<Movie> {
         val userId = store.userId ?: error("Sign in again.")
         val series = seriesId?.let { "&SeriesId=${encode(it)}" }.orEmpty()
         val json = JSONObject(call("GET", "/Shows/NextUp?UserId=$userId&Limit=$limit&Fields=$fields$IMAGES$series"))
         return parseItems(json)
     }
 
-    fun seasons(seriesId: String): List<Movie> {
+    override fun seasons(seriesId: String): List<Movie> {
         val userId = store.userId ?: error("Sign in again.")
         val json = JSONObject(call("GET", "/Shows/${encode(seriesId)}/Seasons?UserId=$userId&Fields=$GRID_FIELDS$IMAGES"))
         return parseItems(json)
     }
 
-    fun episodes(seriesId: String, seasonId: String): List<Movie> {
+    override fun episodes(seriesId: String, seasonId: String): List<Movie> {
         val userId = store.userId ?: error("Sign in again.")
         val json = JSONObject(
             call("GET", "/Shows/${encode(seriesId)}/Episodes?UserId=$userId&SeasonId=${encode(seasonId)}&Fields=Overview$IMAGES")
@@ -195,7 +195,7 @@ class JellyfinClient(
     }
 
     /** The episode after [episode] in the show's order, across seasons, or null at the end of the show. */
-    fun episodeAfter(episode: Movie): Movie? {
+    override fun episodeAfter(episode: Movie): Movie? {
         val userId = store.userId ?: error("Sign in again.")
         val seriesId = episode.seriesId ?: return null
         val json = JSONObject(
@@ -205,7 +205,7 @@ class JellyfinClient(
     }
 
     /** Intro and credits times for [itemId] (Jellyfin 10.10+, filled in by a plugin such as Intro Skipper). */
-    fun segments(itemId: String): List<MediaSegment> {
+    override fun segments(itemId: String): List<MediaSegment> {
         val json = JSONObject(call("GET", "/MediaSegments/${encode(itemId)}"))
         val array = json.optJSONArray("Items") ?: JSONArray()
         return buildList {
@@ -219,41 +219,28 @@ class JellyfinClient(
         }
     }
 
-    /** A poster for [item]: episodes use their show's, since their own picture is a wide still. */
-    fun posterUrl(item: Movie, width: Int = 360): String? =
-        if (item.isEpisode && item.seriesId != null && item.seriesPrimaryTag != null) {
-            imageUrl(item.seriesId, "Primary", item.seriesPrimaryTag, width)
-        } else {
-            imageUrl(item.id, "Primary", item.primaryTag, width)
-        }
-
-    fun backdropUrl(item: Movie, width: Int): String? = imageUrl(item.backdropOwner ?: item.id, "Backdrop", item.backdropTag, width)
-
-    fun item(id: String): Movie {
+    override fun item(id: String): Movie {
         val userId = store.userId ?: error("Sign in again.")
         val fields = "Overview,Taglines,Tags,Genres,People,Studios,ProviderIds,CommunityRating,OfficialRating,MediaStreams,BackdropImageTags,Chapters"
         val text = call("GET", "/Users/$userId/Items/$id?Fields=$fields")
         return parseMovie(JSONObject(text))
     }
 
-    fun imageUrl(itemId: String, kind: String, tag: String?, width: Int): String? {
+    override fun imageUrl(itemId: String, kind: String, tag: String?, width: Int): String? {
         if (tag.isNullOrBlank()) return null
         val encoded = URLEncoder.encode(tag, "UTF-8")
         // WebP is about a third smaller than JPEG at the same quality, so pictures arrive sooner on Wi-Fi.
         return "${base()}/Items/$itemId/Images/$kind?maxWidth=$width&quality=85&format=Webp&tag=$encoded"
     }
 
-    /** The title's logo, for the big title on Home and the detail pages, or null when it has none. */
-    fun logoUrl(item: Movie, width: Int = 640): String? = imageUrl(item.logoOwner ?: item.id, "Logo", item.logoTag, width)
-
     /** One sheet of trickplay thumbnails for [itemId]; [sheet] counts from 0. */
-    fun trickplaySheetUrl(itemId: String, info: TrickplayInfo, sheet: Int): String {
+    override fun trickplaySheetUrl(itemId: String, info: TrickplayInfo, sheet: Int): String {
         val key = URLEncoder.encode(store.token.orEmpty(), "UTF-8")
         return "${base()}/Videos/${encode(itemId)}/Trickplay/${info.width}/$sheet.jpg?MediaSourceId=${encode(info.sourceId)}&api_key=$key"
     }
 
     /** Trailer files kept next to [itemId] in the library. */
-    fun localTrailers(itemId: String): List<Movie> {
+    override fun localTrailers(itemId: String): List<Movie> {
         val userId = store.userId ?: error("Sign in again.")
         val text = try {
             call("GET", "/Items/${encode(itemId)}/LocalTrailers?userId=$userId")
@@ -273,7 +260,7 @@ class JellyfinClient(
 
     fun userImageUrl(userId: String): String = "${base()}/Users/$userId/Images/Primary?maxWidth=240&quality=85&format=Webp"
 
-    fun playback(
+    override fun playback(
         itemId: String,
         startTicks: Long,
         audioIndex: Int?,
@@ -309,7 +296,7 @@ class JellyfinClient(
         return PlaybackPlan(json.optString("PlaySessionId"), source, hls = !direct, burn = burn, mode = effective)
     }
 
-    fun streamUrl(itemId: String, plan: PlaybackPlan): String {
+    override fun streamUrl(itemId: String, plan: PlaybackPlan): String {
         val key = URLEncoder.encode(store.token.orEmpty(), "UTF-8")
         if (plan.hls) {
             val path = plan.source.transcodingUrl ?: throw JellyfinException(404, "No media source")
@@ -332,12 +319,12 @@ class JellyfinClient(
     private fun sizeParam(path: String, name: String): Int? =
         Regex("[?&]$name=(\\d+)", RegexOption.IGNORE_CASE).find(path)?.groupValues?.get(1)?.toIntOrNull()
 
-    fun subtitleVtt(itemId: String, sourceId: String, index: Int): String {
+    override fun subtitleVtt(itemId: String, sourceId: String, index: Int): String {
         val text = call("GET", "/Videos/$itemId/$sourceId/Subtitles/$index/Stream.vtt")
         return cleanVtt(text)
     }
 
-    fun report(path: String, itemId: String, plan: PlaybackPlan, ticks: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) {
+    override fun report(path: String, itemId: String, plan: PlaybackPlan, ticks: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) {
         val body = JSONObject()
             .put("ItemId", itemId)
             .put("MediaSourceId", plan.source.id)
@@ -351,19 +338,19 @@ class JellyfinClient(
         call("POST", path, body)
     }
 
-    fun stopEncoding(playSessionId: String) {
+    override fun stopEncoding(playSessionId: String) {
         if (playSessionId.isBlank()) return
         runCatching {
             call("DELETE", "/Videos/ActiveEncodings?deviceId=${URLEncoder.encode(store.deviceId, "UTF-8")}&playSessionId=${URLEncoder.encode(playSessionId, "UTF-8")}")
         }
     }
 
-    fun toggleFavorite(itemId: String, on: Boolean) {
+    override fun toggleFavorite(itemId: String, on: Boolean) {
         val userId = store.userId ?: return
         call(if (on) "DELETE" else "POST", "/Users/$userId/FavoriteItems/$itemId", if (on) null else JSONObject())
     }
 
-    fun togglePlayed(itemId: String, on: Boolean) {
+    override fun togglePlayed(itemId: String, on: Boolean) {
         val userId = store.userId ?: return
         call(if (on) "DELETE" else "POST", "/Users/$userId/PlayedItems/$itemId", if (on) null else JSONObject())
     }
@@ -372,12 +359,12 @@ class JellyfinClient(
      * Shows hidden from Continue watching. They live in Jellyfin's per-user display preferences,
      * under the same name the web version uses, so both apps share one list.
      */
-    fun hiddenShows(): Set<String> =
+    override fun hiddenShows(): Set<String> =
         displayPrefs().optJSONObject("CustomPrefs")?.optString("hiddenShows").orEmpty()
             .split(',').filter { it.isNotBlank() }.toSet()
 
     /** Hides or shows [seriesId] in Continue watching, and returns the new list. */
-    fun setShowHidden(seriesId: String, hide: Boolean): Set<String> {
+    override fun setShowHidden(seriesId: String, hide: Boolean): Set<String> {
         val prefs = displayPrefs()
         val custom = prefs.optJSONObject("CustomPrefs") ?: JSONObject()
         val before = custom.optString("hiddenShows").split(',').filter { it.isNotBlank() }.toSet()
@@ -399,7 +386,7 @@ class JellyfinClient(
     }
 
     /** Where to stream [ownerId]'s theme song from, or null when the library has none for it. */
-    fun themeSongUrl(ownerId: String): String? {
+    override fun themeSongUrl(ownerId: String): String? {
         val userId = store.userId ?: return null
         val json = JSONObject(call("GET", "/Items/${encode(ownerId)}/ThemeSongs?userId=$userId&inheritFromParent=true"))
         val song = json.optJSONArray("Items")?.optJSONObject(0)?.optString("Id")?.takeIf { it.isNotBlank() } ?: return null
@@ -407,7 +394,7 @@ class JellyfinClient(
         return "${base()}/Audio/${encode(song)}/stream?static=true&api_key=$key"
     }
 
-    fun remoteSubtitles(itemId: String, language: String): List<RemoteSubtitle> {
+    override fun remoteSubtitles(itemId: String, language: String): List<RemoteSubtitle> {
         val config = pluginConfig()
         if (config != null && config.optString("Username").isBlank()) {
             throw JellyfinException(401, "OpenSubtitles login missing")
@@ -422,12 +409,12 @@ class JellyfinClient(
         }.sortedByDescending { it.rank }
     }
 
-    fun downloadSubtitle(itemId: String, subtitleId: String) {
+    override fun downloadSubtitle(itemId: String, subtitleId: String) {
         val encoded = URLEncoder.encode(subtitleId, "UTF-8")
         call("POST", "/Items/$itemId/RemoteSearch/Subtitles/$encoded", JSONObject())
     }
 
-    fun pluginConfig(): JSONObject? {
+    override fun pluginConfig(): JSONObject? {
         return try {
             JSONObject(call("GET", "/Plugins/$OPEN_SUBTITLES/Configuration"))
         } catch (error: JellyfinException) {
@@ -435,7 +422,7 @@ class JellyfinClient(
         }
     }
 
-    fun savePluginConfig(username: String, password: String) {
+    override fun savePluginConfig(username: String, password: String) {
         val current = pluginConfig() ?: throw JellyfinException(404, "OpenSubtitles is not installed")
         val nextPassword = password.ifBlank { current.optString("Password") }
         current.put("Username", username)

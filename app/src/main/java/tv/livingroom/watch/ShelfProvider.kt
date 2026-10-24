@@ -88,7 +88,7 @@ data class ShelfRow(
 )
 
 /** Up to eight cards: what's being watched first, then what's new, without repeats. */
-fun shelfRows(api: JellyfinClient, watching: List<Movie>, recent: List<Movie>): List<ShelfRow> {
+fun shelfRows(api: Library, watching: List<Movie>, recent: List<Movie>): List<ShelfRow> {
     val seen = HashSet<String>()
     val picked = watching.filter { seen.add(it.id) }.map { it to "continue" } + recent.filter { seen.add(it.id) }.map { it to "new" }
     return picked.take(8).map { (item, kind) ->

@@ -132,6 +132,7 @@ fun WatchApp(vm: AppModel) {
             return@Box
         }
         BackHandler(enabled = vm.canBack) { vm.back() }
+        if (vm.driveMode && !vm.driveStatus.access) DriveAccessDialog(vm)
         var railFocused by remember { mutableStateOf(false) }
         val scrim by animateDpAsState(if (railFocused) RailExpanded + 160.dp else 0.dp, label = "scrim")
         Box(
@@ -187,15 +188,16 @@ private fun Rail(vm: AppModel, onFocus: (Boolean) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     val width by animateDpAsState(if (expanded) RailExpanded else RailCollapsed, label = "rail")
     val section = vm.section()
-    val entries = listOf(
+    val entries = listOfNotNull(
         Triple(Screen.Search, "Search", R.drawable.ic_search),
         Triple(Screen.Home, "Home", R.drawable.ic_home),
         Triple(Screen.Movies, "Movies", R.drawable.ic_movies),
-        Triple(Screen.Shows, "TV shows", R.drawable.ic_tv),
+        // The drive only has films.
+        if (vm.driveMode) null else Triple(Screen.Shows, "TV shows", R.drawable.ic_tv),
         Triple(Screen.Genres, "Genres", R.drawable.ic_genres),
         Triple(Screen.Settings, "Settings", R.drawable.ic_settings)
     )
-    val requesters = remember { entries.map { FocusRequester() } }
+    val requesters = remember(entries.size) { entries.map { FocusRequester() } }
     val selectedIndex = entries.indexOfFirst { it.first == section }.coerceAtLeast(1)
     Column(
         Modifier
@@ -311,6 +313,16 @@ private fun ServerStep(vm: AppModel) {
                     width = 170.dp
                 ) { vm.findServers() }
             }
+            // Drive mode: no server, the films are on a drive plugged into this box.
+            item {
+                ProfileTile(
+                    name = "USB drive",
+                    imageUrl = null,
+                    icon = R.drawable.ic_movies,
+                    note = "No server needed",
+                    width = 170.dp
+                ) { vm.useDrive() }
+            }
         }
         Spacer(Modifier.height(18.dp))
         if (vm.busy) {
@@ -360,7 +372,7 @@ private fun ProfileStep(vm: AppModel) {
             items(vm.profiles, key = { it.id }) { profile ->
                 ProfileTile(
                     name = profile.name,
-                    imageUrl = if (profile.hasImage) vm.api.userImageUrl(profile.id) else null,
+                    imageUrl = if (profile.hasImage) vm.jellyfin.userImageUrl(profile.id) else null,
                     note = if (vm.store.hasSavedSession(profile.id)) "Signed in" else "",
                     requester = if (profile == vm.profiles.first()) first else null
                 ) {
@@ -674,8 +686,16 @@ private fun EmptyLibrary(vm: AppModel) {
             return
         }
         Text("Nothing to watch yet", style = TvType.headline)
+        val status = vm.driveStatus
         Text(
-            vm.message.ifBlank { "If the movie drive isn't mounted, plug it in and restart Jellyfin." },
+            vm.message.ifBlank {
+                when {
+                    !vm.driveMode -> "If the movie drive isn't mounted, plug it in and restart Jellyfin."
+                    !status.access -> "Snug needs permission to read the USB drive."
+                    !status.plugged -> "Plug in the movie drive. The box only sees USB drives while USB and Wireless debugging are off."
+                    else -> "No films were found in ${DriveScanner.MOVIES_PATH.substringAfterLast('/')} on the drive."
+                }
+            },
             style = TvType.body,
             modifier = Modifier.padding(top = 8.dp, bottom = 16.dp)
         )
@@ -1434,6 +1454,7 @@ private fun SettingsScreen(vm: AppModel) {
     var pendingOsUser by remember { mutableStateOf("") }
     var askServer by remember { mutableStateOf(false) }
     var askSignOut by remember { mutableStateOf(false) }
+    var askTmdb by remember { mutableStateOf(false) }
     val cueNames = listOf(1f to "Small", 1.35f to "Medium", 1.7f to "Large", 2.1f to "Extra large")
     LazyColumn(
         contentPadding = PaddingValues(top = SafeY, bottom = 48.dp),
@@ -1483,8 +1504,51 @@ private fun SettingsScreen(vm: AppModel) {
         item {
             SettingRow("Subtitle language", SUB_LANGS.find { it.code == vm.subtitleLanguage }?.label ?: "English") { picker = "lang" }
         }
-        item {
+        if (!vm.driveMode) item {
             SettingRow("Find missing subtitles automatically", if (vm.autoSubtitles) "On" else "Off") { vm.setAutoSubs(!vm.autoSubtitles) }
+        }
+        if (vm.driveMode) {
+            item { Kicker("USB drive", Modifier.padding(top = 10.dp)) }
+            item {
+                val status = vm.driveStatus
+                SettingRow(
+                    "Movie drive",
+                    when {
+                        !status.access -> "Not allowed yet"
+                        !status.plugged -> "Not plugged in"
+                        status.matching > 0 -> "${status.films} films · finding ${status.matching}…"
+                        else -> "${status.films} films"
+                    }
+                ) { vm.rescanDrive() }
+            }
+            item {
+                Text(
+                    "Snug only reads ${DriveScanner.MOVIES_PATH} on the drive. Press to scan it again.",
+                    style = TvType.small,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
+            item {
+                val status = vm.driveStatus
+                SettingRow(
+                    "TMDB key",
+                    when {
+                        !status.hasKey -> "Not set"
+                        status.keyRejected -> "Not accepted"
+                        else -> "Set"
+                    }
+                ) { askTmdb = true }
+            }
+            item {
+                Text(
+                    "Posters, plots and cast come from themoviedb.org. A free API key from its Settings → API page goes here.",
+                    style = TvType.small,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
+            item { SettingRow("Use Jellyfin instead", vm.store.server.substringAfter("://").ifBlank { "Choose a server" }) { vm.leaveDrive() } }
+            item { Text("Snug ${BuildConfig.VERSION_NAME} · ${BuildConfig.APPLICATION_ID}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
+            return@LazyColumn
         }
         item { Kicker("OpenSubtitles", Modifier.padding(top = 10.dp)) }
         item {
@@ -1503,6 +1567,8 @@ private fun SettingsScreen(vm: AppModel) {
         // Switching keeps this profile signed in on the TV, so coming back to it needs no password.
         item { SettingRow("Switch profile", vm.store.userName) { vm.switchProfile() } }
         item { SettingRow("Sign out", "") { askSignOut = true } }
+        // Drive mode: films from a USB drive in this box. Jellyfin stays signed in for coming back.
+        item { SettingRow("Play from a USB drive", "Drive mode") { vm.useDrive() } }
         item { Text("Snug ${BuildConfig.VERSION_NAME} · ${BuildConfig.APPLICATION_ID}", style = TvType.small, modifier = Modifier.padding(top = 12.dp, start = 4.dp)) }
     }
     if (picker == "lang") {
@@ -1540,6 +1606,19 @@ private fun SettingsScreen(vm: AppModel) {
             if (it == 0) vm.signOut()
         }
     }
+    if (askTmdb) {
+        TextEntryDialog(
+            "TMDB API key",
+            "",
+            "API key",
+            password = false,
+            note = "The 32-letter \u201cAPI Key\u201d from themoviedb.org, under Settings → API.",
+            onDismiss = { askTmdb = false }
+        ) {
+            askTmdb = false
+            if (it.isNotBlank()) vm.setTmdbKey(it)
+        }
+    }
     if (askServer) {
         PickerDialog(
             "Change server? You'll be signed out.",
@@ -1552,4 +1631,58 @@ private fun SettingsScreen(vm: AppModel) {
         }
     }
 
+}
+
+/**
+ * Drive mode needs Android's permission to read the USB drive: "All files access" from Android 11 on.
+ * Many TV boxes have no screen for granting it, so the one adb command that does is shown as well.
+ */
+@Composable
+private fun DriveAccessDialog(vm: AppModel) {
+    val context = LocalContext.current
+    var note by remember { mutableStateOf("") }
+    val askOld = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.checkDrive() }
+    Dialog(onDismissRequest = {}, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val action = remember { FocusRequester() }
+        LaunchedEffect(Unit) {
+            delay(60)
+            runCatching { action.requestFocus() }
+        }
+        Column(
+            Modifier
+                .width(600.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color(0xF2181A21))
+                .border(1.dp, Line, RoundedCornerShape(22.dp))
+                .padding(28.dp)
+        ) {
+            Text("Let Snug read the USB drive", style = TvType.headline)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Snug only opens the Movies folder (${DriveScanner.MOVIES_PATH}), but Android asks for access to the whole drive.",
+                style = TvType.body
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "If no settings screen opens, run this once from a computer with adb:\nadb shell appops set --uid ${BuildConfig.APPLICATION_ID} MANAGE_EXTERNAL_STORAGE allow",
+                style = TvType.small
+            )
+            if (note.isNotBlank()) Text(note, style = TvType.body, color = Cream, modifier = Modifier.padding(top = 10.dp))
+            Spacer(Modifier.height(22.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TvButton("Allow", primary = true, focusRequester = action) {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                        val own = Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}"))
+                        val list = Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                        val opened = listOf(own, list).any { intent -> runCatching { context.startActivity(intent) }.isSuccess }
+                        if (!opened) note = "This box has no screen for it. Use the adb command above, then press Check again."
+                    } else {
+                        askOld.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                    }
+                }
+                TvButton("Check again") { vm.checkDrive() }
+                TvButton("Use Jellyfin instead") { vm.leaveDrive() }
+            }
+        }
+    }
 }
