@@ -50,6 +50,14 @@ object DriveScanner {
         return films.distinctBy { it.id }.sortedBy { it.video.lowercase(Locale.ROOT) }
     }
 
+    /** Whether [root] holds at least one film, looking no further than [scan] would. Stops at the first. */
+    fun hasFilm(root: File, depth: Int = 0): Boolean {
+        val entries = root.listFiles()?.filter { !it.name.startsWith(".") } ?: return false
+        if (entries.any { it.isFile && isFeature(it) }) return true
+        if (depth >= MAX_DEPTH) return false
+        return entries.any { it.isDirectory && it.name.lowercase(Locale.ROOT) !in EXTRA_FOLDERS && it.name.lowercase(Locale.ROOT) !in SUB_FOLDERS && hasFilm(it, depth + 1) }
+    }
+
     private fun visit(root: File, dir: File, depth: Int, out: MutableList<DriveFilm>) {
         val entries = dir.listFiles()?.filter { !it.name.startsWith(".") } ?: return
         val videos = entries.filter { it.isFile && isFeature(it) }
