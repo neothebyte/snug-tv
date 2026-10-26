@@ -60,7 +60,7 @@ Snug can also play films straight off a USB drive plugged into the TV box, with 
 
 Your drive can hold anything else besides films: Snug only reads the one folder you give it.
 
-**Found by itself.** If you don't choose a folder, Snug looks at the folders at the very top of the drive for one named `Movies`, `Movie`, `Films` or `Film`. Upper or lower case doesn't matter (`MOVIES` and `movie` both work). Only the names of the top folders are looked at, never what is inside the others. A folder deeper down, such as `Media/Movies`, isn't found by itself; choose it as below.
+**Found by itself.** If you don't choose a folder, Snug looks at the folders at the very top of the drive for one named `Movies`, `Movie`, `Films` or `Film`. Upper or lower case doesn't matter (`MOVIES` and `movie` both work). Only the names of the top folders are looked at, never what is inside the others. A folder with that name but no films in it (Android makes an empty `Movies` folder on drives plugged into it) is skipped. A folder deeper down, such as `Media/Movies`, isn't found by itself; choose it as below.
 
 **Choosing it yourself.**
 

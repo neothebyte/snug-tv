@@ -159,17 +159,21 @@ class DriveLibrary(private val context: Context, http: OkHttpClient) : Library {
     /**
      * The movies folder on whichever plugged-in drive has it: the chosen one, else a top-level folder
      * named one of [AUTO_NAMES] (any case), else [OLD_FOLDER]. Only the names of the folders at the top
-     * of each drive are read; nothing inside them is opened.
+     * of each drive are read, plus the inside of those candidates.
+     *
+     * Android makes an empty Movies folder (with DCIM, Pictures and Download) on drives plugged into it,
+     * so a candidate with no films in it is passed over for the next one that has some.
      */
     private fun findRoot(): File? {
         val chosen = folder
         val tops = drives().map { it.second }
         if (chosen.isNotBlank()) return tops.map { File(it, chosen) }.firstOrNull { it.isDirectory }
-        for (top in tops) {
+        val candidates = tops.flatMap { top ->
             val dirs = top.listFiles()?.filter { it.isDirectory }.orEmpty()
-            AUTO_NAMES.firstNotNullOfOrNull { name -> dirs.firstOrNull { it.name.trim().equals(name, ignoreCase = true) } }?.let { return it }
+            AUTO_NAMES.mapNotNull { name -> dirs.firstOrNull { it.name.trim().equals(name, ignoreCase = true) } } +
+                listOf(File(top, OLD_FOLDER)).filter { it.isDirectory }
         }
-        return tops.map { File(it, OLD_FOLDER) }.firstOrNull { it.isDirectory }
+        return candidates.firstOrNull { DriveScanner.hasFilm(it) } ?: candidates.firstOrNull()
     }
 
     /** Plugged-in drives, with the name the box gives each, for choosing the movies folder. */
